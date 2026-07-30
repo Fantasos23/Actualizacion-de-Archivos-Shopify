@@ -1,0 +1,307 @@
+{
+    "campos_estandar": {
+        "descriptionHtml": {
+            "nombre": "Descripción HTML",
+            "tipo_dato": "string",
+            "nivel": "product",
+            "posibles_columnas_excel": [
+                "Body (HTML)",
+                "Body HTML",
+                "Descripción",
+                "Descripcion",
+                "Body"
+            ]
+        },
+        "vendor": {
+            "nombre": "Proveedor / Marca",
+            "tipo_dato": "string",
+            "nivel": "product",
+            "posibles_columnas_excel": [
+                "Vendor",
+                "Proveedor",
+                "Marca"
+            ]
+        },
+        "productType": {
+            "nombre": "Tipo de Producto",
+            "tipo_dato": "string",
+            "nivel": "product",
+            "posibles_columnas_excel": [
+                "Type",
+                "Tipo",
+                "Product Type"
+            ]
+        },
+        "tags": {
+            "nombre": "Etiquetas",
+            "tipo_dato": "list_string",
+            "nivel": "product",
+            "posibles_columnas_excel": [
+                "Tags",
+                "Etiquetas"
+            ]
+        },
+        "price": {
+            "nombre": "Precio de Venta",
+            "tipo_dato": "money",
+            "nivel": "variant",
+            "posibles_columnas_excel": [
+                "Variant Price",
+                "Price",
+                "Precio"
+            ]
+        },
+        "sku": {
+            "nombre": "SKU",
+            "tipo_dato": "string",
+            "nivel": "variant",
+            "posibles_columnas_excel": [
+                "Variant SKU",
+                "SKU",
+                "Codigo SKU"
+            ]
+        },
+        "taxable": {
+            "nombre": "Cobra Impuestos (IVA)",
+            "tipo_dato": "boolean",
+            "nivel": "variant",
+            "posibles_columnas_excel": [
+                "Variant Taxable",
+                "Taxable",
+                "Impuestos",
+                "Impuesto",
+                "Aplica Impuesto"
+            ]
+        },
+        "inventoryQuantity": {
+            "nombre": "Cantidad en Inventario",
+            "tipo_dato": "integer",
+            "nivel": "inventory",
+            "posibles_columnas_excel": [
+                "Variant Inventory Qty",
+                "Inventory Qty",
+                "Inventario",
+                "Cantidad",
+                "Stock"
+            ]
+        }
+    },
+    "metafields": {
+        "estado": {
+            "name": "estado",
+            "namespace": "custom",
+            "key": "estado",
+            "type": "single_line_text_field",
+            "posibles_columnas_excel": [
+                "estado (product.metafields.custom.estado)",
+                "estado",
+                "estado",
+                "custom.estado"
+            ]
+        },
+        "presentacion": {
+            "name": "presentacion",
+            "namespace": "custom",
+            "key": "presentacion",
+            "type": "single_line_text_field",
+            "posibles_columnas_excel": [
+                "presentacion (product.metafields.custom.presentacion)",
+                "presentacion",
+                "presentacion",
+                "custom.presentacion"
+            ]
+        },
+        "serpi": {
+            "name": "serpi",
+            "namespace": "custom",
+            "key": "serpi",
+            "type": "single_line_text_field",
+            "posibles_columnas_excel": [
+                "serpi (product.metafields.custom.serpi)",
+                "serpi",
+                "serpi",
+                "custom.serpi"
+            ]
+        },
+        "paginas": {
+            "name": "paginas",
+            "namespace": "custom",
+            "key": "paginas",
+            "type": "single_line_text_field",
+            "posibles_columnas_excel": [
+                "paginas (product.metafields.custom.paginas)",
+                "paginas",
+                "paginas",
+                "custom.paginas"
+            ]
+        },
+        "custom_product": {
+            "name": "Google: Custom Product",
+            "namespace": "mm-google-shopping",
+            "key": "custom_product",
+            "type": "boolean",
+            "posibles_columnas_excel": [
+                "Google: Custom Product (product.metafields.mm-google-shopping.custom_product)",
+                "Google: Custom Product",
+                "custom_product",
+                "mm-google-shopping.custom_product"
+            ]
+        },
+        "queries": {
+            "name": "Search product boosts",
+            "namespace": "shopify--discovery--product_search_boost",
+            "key": "queries",
+            "type": "list.single_line_text_field",
+            "posibles_columnas_excel": [
+                "Search product boosts (product.metafields.shopify--discovery--product_search_boost.queries)",
+                "Search product boosts",
+                "queries",
+                "shopify--discovery--product_search_boost.queries"
+            ]
+        },
+        "related_products": {
+            "name": "Related products",
+            "namespace": "shopify--discovery--product_recommendation",
+            "key": "related_products",
+            "type": "list.product_reference",
+            "posibles_columnas_excel": [
+                "Related products (product.metafields.shopify--discovery--product_recommendation.related_products)",
+                "Related products",
+                "related_products",
+                "shopify--discovery--product_recommendation.related_products"
+            ]
+        },
+        "related_products_display": {
+            "name": "Related products settings",
+            "namespace": "shopify--discovery--product_recommendation",
+            "key": "related_products_display",
+            "type": "single_line_text_field",
+            "posibles_columnas_excel": [
+                "Related products settings (product.metafields.shopify--discovery--product_recommendation.related_products_display)",
+                "Related products settings",
+                "related_products_display",
+                "shopify--discovery--product_recommendation.related_products_display"
+            ]
+        },
+        "complementary_products": {
+            "name": "Complementary products",
+            "namespace": "shopify--discovery--product_recommendation",
+            "key": "complementary_products",
+            "type": "list.product_reference",
+            "posibles_columnas_excel": [
+                "Complementary products (product.metafields.shopify--discovery--product_recommendation.complementary_products)",
+                "Complementary products",
+                "complementary_products",
+                "shopify--discovery--product_recommendation.complementary_products"
+            ]
+        },
+        "rating": {
+            "name": "Product rating",
+            "namespace": "reviews",
+            "key": "rating",
+            "type": "rating",
+            "posibles_columnas_excel": [
+                "Product rating (product.metafields.reviews.rating)",
+                "Product rating",
+                "rating",
+                "reviews.rating"
+            ]
+        },
+        "rating_count": {
+            "name": "Product rating count",
+            "namespace": "reviews",
+            "key": "rating_count",
+            "type": "number_integer",
+            "posibles_columnas_excel": [
+                "Product rating count (product.metafields.reviews.rating_count)",
+                "Product rating count",
+                "rating_count",
+                "reviews.rating_count"
+            ]
+        },
+        "genre": {
+            "name": "Genre",
+            "namespace": "shopify",
+            "key": "genre",
+            "type": "list.metaobject_reference",
+            "posibles_columnas_excel": [
+                "Genre (product.metafields.shopify.genre)",
+                "Genre",
+                "genre",
+                "shopify.genre"
+            ]
+        },
+        "target-audience": {
+            "name": "Target audience",
+            "namespace": "shopify",
+            "key": "target-audience",
+            "type": "list.metaobject_reference",
+            "posibles_columnas_excel": [
+                "Target audience (product.metafields.shopify.target-audience)",
+                "Target audience",
+                "target-audience",
+                "shopify.target-audience"
+            ]
+        },
+        "language-version": {
+            "name": "Language version",
+            "namespace": "shopify",
+            "key": "language-version",
+            "type": "list.metaobject_reference",
+            "posibles_columnas_excel": [
+                "Language version (product.metafields.shopify.language-version)",
+                "Language version",
+                "language-version",
+                "shopify.language-version"
+            ]
+        },
+        "book-cover-type": {
+            "name": "Book cover type",
+            "namespace": "shopify",
+            "key": "book-cover-type",
+            "type": "list.metaobject_reference",
+            "posibles_columnas_excel": [
+                "Book cover type (product.metafields.shopify.book-cover-type)",
+                "Book cover type",
+                "book-cover-type",
+                "shopify.book-cover-type"
+            ]
+        },
+        "autor": {
+            "name": "Autor",
+            "namespace": "custom",
+            "key": "autor",
+            "type": "single_line_text_field",
+            "posibles_columnas_excel": [
+                "Autor (product.metafields.custom.autor)",
+                "Autor",
+                "autor",
+                "custom.autor"
+            ]
+        },
+        "categoria": {
+            "name": "Categoria",
+            "namespace": "custom",
+            "key": "categoria",
+            "type": "single_line_text_field",
+            "posibles_columnas_excel": [
+                "Categoria (product.metafields.custom.categoria)",
+                "Categoria",
+                "categoria",
+                "custom.categoria"
+            ]
+        },
+        "editorial": {
+            "name": "Editorial",
+            "namespace": "custom",
+            "key": "editorial",
+            "type": "single_line_text_field",
+            "posibles_columnas_excel": [
+                "Editorial (product.metafields.custom.editorial)",
+                "Editorial",
+                "editorial",
+                "custom.editorial"
+            ]
+        }
+    }
+}
