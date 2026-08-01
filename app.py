@@ -167,7 +167,7 @@ def actualizar_producto_con_esquema(product_id, row):
     v_tax = obtener_valor_fila(row, campos_estandar.get("taxable", {}).get("posibles_columnas_excel", []))
 
     if v_price is not None or v_sku is not None or v_tax is not None:
-        # Obtener el ID de la primera variante del producto
+        # Obtener el ID de la primera variante
         query_var = """
         query getVariantId($id: ID!) {
           product(id: $id) {
@@ -187,7 +187,7 @@ def actualizar_producto_con_esquema(product_id, row):
         if v_edges:
             variant_id = v_edges[0]["node"]["id"]
             
-            # Construir la entrada para productVariantsBulkUpdate
+            # Construir la entrada para productVariantUpdate (ProductVariantInput)
             variant_input = {"id": variant_id}
 
             if v_price is not None:
@@ -197,15 +197,18 @@ def actualizar_producto_con_esquema(product_id, row):
                 variant_input["sku"] = str(v_sku).strip()
 
             if v_tax is not None:
-                # Normalización estricta del valor booleano
-                v_tax_str = str(v_tax).strip().upper()
-                es_taxable = v_tax_str in ["TRUE", "1", "SI", "SÍ", "YES"]
+                val_str = str(v_tax).strip().upper()
+                es_taxable = val_str in ["TRUE", "1", "SI", "SÍ", "YES"]
                 variant_input["taxable"] = es_taxable
 
-            # Ejecutar mutación específica para variantes
+            # Mutación nativa individual para variantes
             mutation_var = """
-            mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-              productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+            mutation productVariantUpdate($input: ProductVariantInput!) {
+              productVariantUpdate(input: $input) {
+                productVariant {
+                  id
+                  taxable
+                }
                 userErrors {
                   field
                   message
@@ -213,11 +216,8 @@ def actualizar_producto_con_esquema(product_id, row):
               }
             }
             """
-            res_v_update = ejecutar_graphql(mutation_var, {
-                "productId": product_id,
-                "variants": [variant_input]
-            })
-            err_v = res_v_update.get("data", {}).get("productVariantsBulkUpdate", {}).get("userErrors", [])
+            res_v_update = ejecutar_graphql(mutation_var, {"input": variant_input})
+            err_v = res_v_update.get("data", {}).get("productVariantUpdate", {}).get("userErrors", [])
             if err_v:
                 errores_totales.extend(err_v)
 
