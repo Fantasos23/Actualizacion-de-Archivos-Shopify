@@ -54,7 +54,7 @@ def buscar_product_id_por_serpi(serpi_code):
 
 def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
     """
-    Sube la imagen al CDN de Shopify y la asigna al producto
+    Sube la imagen al CDN de Shopify respetando la firma de Amazon/GCS
     """
     file_size = str(len(file_bytes))
     ext = file_name.split('.')[-1].lower()
@@ -68,7 +68,7 @@ def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
     else:
         mime = "image/jpeg"
     
-    # 1. Solicitar espacio de carga (stagedUploadsCreate)
+    # 1. Solicitar la URL de carga (Staged Upload)
     mutation_stage = """
     mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
       stagedUploadsCreate(input: $input) {
@@ -110,23 +110,23 @@ def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
     upload_url = target["url"]
     resource_url = target["resourceUrl"]
     
-    # 2. Armar parámetros para el CDN de Amazon S3
-    form_data = {}
+    # 2. Armar el payload ordenado de parámetros
+    # Para evitar SignatureDoesNotMatch, la tupla del archivo 'file' DEBE incluir la lista
+    # exacta de campos entregados por Shopify
+    multipart_data = []
     for param in target["parameters"]:
-        form_data[param["name"]] = param["value"]
+        multipart_data.append((param["name"], (None, param["value"])))
 
-    # El archivo DEBE incluir nombre, contenido en bytes y MIME type
-    files_payload = {
-        'file': (file_name, file_bytes, mime)
-    }
+    # Adjuntar el archivo físico al final de las tuplas multipart
+    multipart_data.append(('file', (file_name, file_bytes, mime)))
 
-    # Subida al CDN (sin headers de la API de Shopify)
-    res_upload = requests.post(upload_url, data=form_data, files=files_payload)
+    # Realizar el POST al CDN de carga sin headers custom
+    res_upload = requests.post(upload_url, files=multipart_data)
     
     if res_upload.status_code not in [200, 201]:
-        return False, f"Error en CDN HTTP {res_upload.status_code}: {res_upload.text[:150]}"
+        return False, f"Error en CDN HTTP {res_upload.status_code}: {res_upload.text[:120]}"
 
-    # 3. Asociar el recurso subido al Producto
+    # 3. Vincular la imagen al producto mediante GraphQL
     mutation_media = """
     mutation productCreateMedia($media: [CreateMediaInput!]!, $productId: ID!) {
       productCreateMedia(media: $media, productId: $productId) {
