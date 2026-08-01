@@ -29,7 +29,7 @@ def ejecutar_graphql(query, variables=None):
 
 def buscar_product_id_por_serpi(serpi_code):
     """
-    Busca el ID único de un producto en Shopify filtrando por el Metafield custom.serpi
+    Busca el ID de producto en Shopify filtrando por el Metafield custom.serpi
     """
     query = """
     query buscarPorSerpi($query: String!) {
@@ -44,7 +44,6 @@ def buscar_product_id_por_serpi(serpi_code):
       }
     }
     """
-    # Consulta exacta al metafield custom.serpi
     search_query = f"metafields.custom.serpi:'{serpi_code}'"
     res = ejecutar_graphql(query, {"query": search_query})
     products = res.get("data", {}).get("products", {}).get("edges", [])
@@ -55,11 +54,14 @@ def buscar_product_id_por_serpi(serpi_code):
 
 def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
     """
-    Sube el archivo de la imagen al CDN de Shopify y lo vincula al producto.
+    Sube el archivo al CDN de Shopify usando FILE_UPLOAD para evitar errores SignatureDoesNotMatch
     """
     file_size = str(len(file_bytes))
+    ext = file_name.split('.')[-1].lower()
     
-    # 1. Pedir URL de subida temporal (Staged Upload)
+    mime = "image/png" if ext == "png" else "image/webp" if ext == "webp" else "image/jpeg"
+    
+    # 1. Solicitar la URL de subida para recursos tipo FILE_UPLOAD
     mutation_stage = """
     mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
       stagedUploadsCreate(input: $input) {
@@ -76,22 +78,11 @@ def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
     }
     """
     
-    # Determinar tipo MIME exacto
-    ext = file_name.split('.')[-1].lower()
-    if ext in ["jpg", "jpeg"]:
-        mime = "image/jpeg"
-    elif ext == "png":
-        mime = "image/png"
-    elif ext == "webp":
-        mime = "image/webp"
-    else:
-        mime = "image/jpeg"
-    
     payload_stage = {
         "input": [{
             "filename": file_name,
             "mimeType": mime,
-            "resource": "IMAGE",
+            "resource": "FILE_UPLOAD",
             "fileSize": file_size
         }]
     }
@@ -106,23 +97,20 @@ def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
     upload_url = target["url"]
     resource_url = target["resourceUrl"]
     
-    # Construir el formulario de parámetros para Amazon S3 / Shopify CDN
-    form_data = {}
-    for param in target["parameters"]:
-        form_data[param["name"]] = param["value"]
-
-    # El archivo DEBE ir al final de los parámetros
-    files_payload = {
-        'file': (file_name, file_bytes, mime)
-    }
-
-    # 2. Subir archivo físico al CDN (sin headers de Shopify)
-    res_upload = requests.post(upload_url, data=form_data, files=files_payload)
+    # 2. Reconstruir los parámetros respetando la firma estricta
+    params_list = [(p["name"], p["value"]) for p in target["parameters"]]
+    
+    # Subir usando multipart/form-data puro con tuple para no alterar la firma
+    res_upload = requests.post(
+        upload_url,
+        data=params_list,
+        files={'file': (file_name, file_bytes, mime)}
+    )
     
     if res_upload.status_code not in [200, 201]:
-        return False, f"Error en CDN HTTP {res_upload.status_code} - {res_upload.text[:100]}"
+        return False, f"Error en CDN HTTP {res_upload.status_code}"
 
-    # 3. Vincular la imagen subida con el producto vía GraphQL
+    # 3. Asociar la imagen cargada al Producto
     mutation_media = """
     mutation productCreateMedia($media: [CreateMediaInput!]!, $productId: ID!) {
       productCreateMedia(media: $media, productId: $productId) {
