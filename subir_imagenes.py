@@ -1,8 +1,6 @@
 import os
-import json
+import base64
 import requests
-import urllib.request
-import urllib.parse
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -16,6 +14,8 @@ API_TOKEN = os.getenv("SHOPIFY_API_TOKEN", "").strip()
 API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2026-04").strip()
 
 GRAPHQL_URL = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}/graphql.json"
+REST_URL = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}"
+
 HEADERS = {
     "X-Shopify-Access-Token": API_TOKEN,
     "Content-Type": "application/json"
@@ -31,6 +31,9 @@ def ejecutar_graphql(query, variables=None):
     raise Exception(f"HTTP {res.status_code}: {res.text}")
 
 def buscar_product_id_por_serpi(serpi_code):
+    """
+    Busca el ID único de un producto en Shopify filtrando por el Metafield custom.serpi
+    """
     query = """
     query buscarPorSerpi($query: String!) {
       products(first: 1, query: $query) {
@@ -54,109 +57,33 @@ def buscar_product_id_por_serpi(serpi_code):
 
 def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
     """
-    Sube la imagen al CDN respetando de forma estricta el multipart de S3/GCS
+    Sube la imagen directamente a Shopify enviándola en formato Base64.
+    ¡Esto omite el CDN de GCS/S3 y evita errores de firma por completo!
     """
-    file_size = str(len(file_bytes))
-    ext = file_name.split('.')[-1].lower()
-    
-    mime = "image/jpeg"
-    if ext == "png":
-        mime = "image/png"
-    elif ext == "webp":
-        mime = "image/webp"
-
-    # 1. Solicitar la URL de carga (Staged Upload)
-    mutation_stage = """
-    mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
-      stagedUploadsCreate(input: $input) {
-        stagedTargets {
-          url
-          resourceUrl
-          parameters {
-            name
-            value
-          }
-        }
-        userErrors { field message }
-      }
-    }
-    """
-    
-    payload_stage = {
-        "input": [{
-            "filename": file_name,
-            "mimeType": mime,
-            "resource": "PRODUCT_IMAGE",
-            "fileSize": file_size
-        }]
-    }
-    
-    res_stage = ejecutar_graphql(mutation_stage, payload_stage)
-    targets = res_stage.get("data", {}).get("stagedUploadsCreate", {}).get("stagedTargets", [])
-    
-    if not targets:
-        return False, "Shopify no devolvió URL de carga."
-        
-    target = targets[0]
-    upload_url = target["url"]
-    resource_url = target["resourceUrl"]
-    
-    # 2. Construir multipart/form-data nativo para evitar corrupción de firma
-    boundary = "----WebKitFormBoundaryShopifyPythonSync"
-    body = bytearray()
-
-    # Agregar cada parámetro entregado por Shopify
-    for param in target["parameters"]:
-        body.extend(f"--{boundary}\r\n".encode('utf-8'))
-        body.extend(f'Content-Disposition: form-data; name="{param["name"]}"\r\n\r\n'.encode('utf-8'))
-        body.extend(f'{param["value"]}\r\n'.encode('utf-8'))
-
-    # Agregar el archivo físico 'file' como último elemento
-    body.extend(f"--{boundary}\r\n".encode('utf-8'))
-    body.extend(f'Content-Disposition: form-data; name="file"; filename="{file_name}"\r\n'.encode('utf-8'))
-    body.extend(f'Content-Type: {mime}\r\n\r\n'.encode('utf-8'))
-    body.extend(file_bytes)
-    body.extend(f"\r\n--{boundary}--\r\n".encode('utf-8'))
-
-    req = urllib.request.Request(
-        upload_url,
-        data=bytes(body),
-        headers={
-            "Content-Type": f"multipart/form-data; boundary={boundary}"
-        },
-        method="POST"
-    )
-
     try:
-        with urllib.request.urlopen(req) as response:
-            if response.status not in [200, 201]:
-                return False, f"Error CDN HTTP {response.status}"
-    except urllib.error.HTTPError as e:
-        err_msg = e.read().decode('utf-8', errors='ignore')
-        return False, f"Error CDN HTTP {e.code}: {err_msg[:120]}"
-
-    # 3. Vincular la imagen al Producto
-    mutation_media = """
-    mutation productCreateMedia($media: [CreateMediaInput!]!, $productId: ID!) {
-      productCreateMedia(media: $media, productId: $productId) {
-        media { id }
-        userErrors { field message }
-      }
-    }
-    """
-    
-    payload_media = {
-        "productId": product_id,
-        "media": [{
-            "originalSource": resource_url,
-            "mediaContentType": "IMAGE",
-            "alt": f"Portada SERPI {file_name}"
-        }]
-    }
-    
-    res_media = ejecutar_graphql(mutation_media, payload_media)
-    errors = res_media.get("data", {}).get("productCreateMedia", {}).get("userErrors", [])
-    
-    if not errors:
-        return True, "Exitosa"
-    return False, ", ".join([e["message"] for e in errors])
+        # Extraer el ID numérico de Shopify del formato GraphQL (gid://shopify/Product/123456)
+        product_numeric_id = product_id.split("/")[-1]
+        
+        # Convertir la imagen a Base64
+        base64_image = base64.b64encode(file_bytes).decode('utf-8')
+        
+        # Endpoint de imágenes del producto
+        url_endpoint = f"{REST_URL}/products/{product_numeric_id}/images.json"
+        
+        payload = {
+            "image": {
+                "attachment": base64_image,
+                "filename": file_name,
+                "alt": f"Portada SERPI {file_name}"
+            }
+        }
+        
+        res = requests.post(url_endpoint, json=payload, headers=HEADERS)
+        
+        if res.status_code in [200, 201]:
+            return True, "Exitosa"
+        else:
+            return False, f"HTTP {res.status_code}: {res.text[:150]}"
+            
+    except Exception as e:
+        return False, str(e)
