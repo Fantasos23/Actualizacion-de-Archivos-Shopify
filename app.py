@@ -6,6 +6,7 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
+from subir_imagenes import buscar_product_id_por_serpi, cargar_imagen_a_shopify
 
 # -------------------------------------------------------------
 # 1. Configuración de Entorno y Conexión API
@@ -302,3 +303,59 @@ if st.session_state.get("procesado"):
             status_text.text(f"Procesando {i + 1} de {total}... (Éxitos: {exitosos} | Errores: {errores})")
 
         st.success(f"🎉 Proceso completado. Exitosos: {exitosos} | Errores: {errores}")
+# -------------------------------------------------------------
+# SECCIÓN: Subida de Imágenes Masiva por Código SERPI
+# -------------------------------------------------------------
+st.divider()
+st.header("🖼️ Subida Masiva de Portadas por Código SERPI")
+st.write("Selecciona una o múltiples imágenes desde tu equipo. **El nombre de la imagen debe ser el código SERPI del libro** (ejemplo: `100245.jpg`, `SERPI-982.png`).")
+
+# Cargar archivos desde el explorador nativo del S.O.
+uploaded_images = st.file_uploader(
+    "Haz clic o arrastra aquí las imágenes a subir",
+    type=["jpg", "jpeg", "png", "webp"],
+    accept_multiple_files=True
+)
+
+if uploaded_images:
+    st.info(f"📁 Se han seleccionado {len(uploaded_images)} imagen(es) para procesar.")
+    
+    if st.button("🚀 Iniciar Vinculación de Imágenes a Shopify"):
+        progreso_img = st.progress(0)
+        status_img = st.empty()
+        
+        exitos = 0
+        fallos = 0
+        total_img = len(uploaded_images)
+        
+        for i, file_obj in enumerate(uploaded_images):
+            # Extraer el código SERPI quitando la extensión del archivo
+            serpi_code = Path(file_obj.name).stem.strip()
+            status_img.text(f"Buscando producto con Código SERPI: '{serpi_code}'...")
+            
+            try:
+                # 1. Buscar ID de Producto en Shopify usando el metafield
+                product_id, title = buscar_product_id_por_serpi(serpi_code)
+                
+                if product_id:
+                    # 2. Leer bytes del archivo e invocar carga al CDN
+                    bytes_data = file_obj.read()
+                    ok, msg = cargar_imagen_a_shopify(product_id, bytes_data, file_obj.name)
+                    
+                    if ok:
+                        st.success(f"✅ [{serpi_code}] Imagen asignada a: **{title}**")
+                        exitos += 1
+                    else:
+                        st.error(f"❌ [{serpi_code}] Error al subir la imagen: {msg}")
+                        fallos += 1
+                else:
+                    st.warning(f"⚠️ [{serpi_code}] No se encontró ningún producto con este metafield custom.serpi.")
+                    fallos += 1
+                    
+            except Exception as e:
+                st.error(f"❌ [{serpi_code}] Error inesperado: {e}")
+                fallos += 1
+
+            progreso_img.progress((i + 1) / total_img)
+
+        st.success(f"🎉 Proceso de imágenes finalizado. Exitosas: {exitos} | Fallidas/No encontradas: {fallos}")
