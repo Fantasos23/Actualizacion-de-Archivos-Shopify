@@ -88,51 +88,48 @@ def obtener_product_id_por_handle(handle):
 # -------------------------------------------------------------
 def actualizar_producto_con_esquema(product_id, row):
     errores_totales = []
-    
-    # ---------------------------------------------------------
-    # PASO A: Atributos a nivel Producto & Metafields
-    # ---------------------------------------------------------
-    input_product = {"id": product_id}
     campos_estandar = SCHEMA.get("campos_estandar", {})
     
-    # Description HTML
+    input_product = {"id": product_id}
+    
+    # ---------------------------------------------------------
+    # 1. CAMPOS ESTÁNDAR A NIVEL DE PRODUCTO
+    # ---------------------------------------------------------
     v_desc = obtener_valor_fila(row, campos_estandar.get("descriptionHtml", {}).get("posibles_columnas_excel", []))
     if v_desc is not None:
-        input_product["descriptionHtml"] = v_desc
+        input_product["descriptionHtml"] = str(v_desc)
 
-    # Vendor
     v_vendor = obtener_valor_fila(row, campos_estandar.get("vendor", {}).get("posibles_columnas_excel", []))
     if v_vendor is not None:
-        input_product["vendor"] = v_vendor
+        input_product["vendor"] = str(v_vendor)
 
-    # Product Type
     v_type = obtener_valor_fila(row, campos_estandar.get("productType", {}).get("posibles_columnas_excel", []))
     if v_type is not None:
-        input_product["productType"] = v_type
+        input_product["productType"] = str(v_type)
 
-    # Tags
     v_tags = obtener_valor_fila(row, campos_estandar.get("tags", {}).get("posibles_columnas_excel", []))
     if v_tags is not None:
-        input_product["tags"] = [t.strip() for t in v_tags.split(',')]
+        input_product["tags"] = [t.strip() for t in str(v_tags).split(',')]
 
-    # Construir Metafields según el tipo exacto definido en shopify_schema.json
+    # ---------------------------------------------------------
+    # 2. METAFIELDS
+    # ---------------------------------------------------------
     metafields_input = []
     metafields_schema = SCHEMA.get("metafields", {})
     
     for key_meta, info_meta in metafields_schema.items():
         v_meta = obtener_valor_fila(row, info_meta.get("posibles_columnas_excel", []))
         if v_meta is not None:
-            # Omitir metaobjetos si vienen en texto plano para evitar errores de inconsistencia
+            v_meta_str = str(v_meta).strip()
             tipo_meta = info_meta.get("type", "single_line_text_field")
-            if "metaobject_reference" in tipo_meta and not v_meta.startswith("gid://shopify/"):
+            if "metaobject_reference" in tipo_meta and not v_meta_str.startswith("gid://shopify/"):
                 continue
 
-            # Convertir booleanos
             if tipo_meta == "boolean":
-                val_bool = v_meta.lower() in ['true', '1', 'si', 'sí', 'yes']
+                val_bool = v_meta_str.lower() in ['true', '1', 'si', 'sí', 'yes']
                 val_str = "true" if val_bool else "false"
             else:
-                val_str = v_meta
+                val_str = v_meta_str
 
             metafields_input.append({
                 "namespace": info_meta["namespace"],
@@ -144,7 +141,9 @@ def actualizar_producto_con_esquema(product_id, row):
     if metafields_input:
         input_product["metafields"] = metafields_input
 
-    # Ejecutar actualización de Producto y Metafields
+    # ---------------------------------------------------------
+    # 3. ACTUALIZAR PRODUCTO PRINCIPAL (DESCRIPCIÓN, VENDOR, TAGS, METAFIELDS)
+    # ---------------------------------------------------------
     mutation_prod = """
     mutation productUpdate($input: ProductInput!) {
       productUpdate(input: $input) {
@@ -161,13 +160,14 @@ def actualizar_producto_con_esquema(product_id, row):
         errores_totales.extend(err_p)
 
     # ---------------------------------------------------------
-    # PASO B: Actualizar Variante (Precio, SKU, Impuestos)
+    # 4. CAMPOS A NIVEL DE VARIANTE (PRICE, SKU, TAXABLE)
     # ---------------------------------------------------------
     v_price = obtener_valor_fila(row, campos_estandar.get("price", {}).get("posibles_columnas_excel", []))
     v_sku = obtener_valor_fila(row, campos_estandar.get("sku", {}).get("posibles_columnas_excel", []))
     v_tax = obtener_valor_fila(row, campos_estandar.get("taxable", {}).get("posibles_columnas_excel", []))
 
     if v_price is not None or v_sku is not None or v_tax is not None:
+        # Obtener el ID de la primera variante del producto
         query_var = """
         query getVariantId($id: ID!) {
           product(id: $id) {
@@ -186,15 +186,23 @@ def actualizar_producto_con_esquema(product_id, row):
 
         if v_edges:
             variant_id = v_edges[0]["node"]["id"]
-            var_input = {"id": variant_id}
+            
+            # Construir la entrada para productVariantsBulkUpdate
+            variant_input = {"id": variant_id}
 
             if v_price is not None:
-                var_input["price"] = v_price
-            if v_sku is not None:
-                var_input["sku"] = v_sku
-            if v_tax is not None:
-                var_input["taxable"] = v_tax.lower() in ['true', '1', 'si', 'sí', 'yes']
+                variant_input["price"] = str(v_price).strip()
 
+            if v_sku is not None:
+                variant_input["sku"] = str(v_sku).strip()
+
+            if v_tax is not None:
+                # Normalización estricta del valor booleano
+                v_tax_str = str(v_tax).strip().upper()
+                es_taxable = v_tax_str in ["TRUE", "1", "SI", "SÍ", "YES"]
+                variant_input["taxable"] = es_taxable
+
+            # Ejecutar mutación específica para variantes
             mutation_var = """
             mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
               productVariantsBulkUpdate(productId: $productId, variants: $variants) {
@@ -205,11 +213,11 @@ def actualizar_producto_con_esquema(product_id, row):
               }
             }
             """
-            res_bulk = ejecutar_graphql(mutation_var, {
+            res_v_update = ejecutar_graphql(mutation_var, {
                 "productId": product_id,
-                "variants": [var_input]
+                "variants": [variant_input]
             })
-            err_v = res_bulk.get("data", {}).get("productVariantsBulkUpdate", {}).get("userErrors", [])
+            err_v = res_v_update.get("data", {}).get("productVariantsBulkUpdate", {}).get("userErrors", [])
             if err_v:
                 errores_totales.extend(err_v)
 
