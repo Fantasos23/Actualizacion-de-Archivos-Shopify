@@ -8,6 +8,10 @@ base_dir = Path(__file__).parent
 load_dotenv(dotenv_path=base_dir / '.env')
 load_dotenv(dotenv_path=base_dir / 'Shopify.env')
 
+RAW_SHOP_URL = os.getenv("SHOPIFY_SHOP_URL", "").replace("https://", "").replace("http://", "").strip("/")
+API_TOKEN = os.getenv("SHOPIFY_API_TOKEN", "").strip()
+API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2026-04").strip()
+
 GRAPHQL_URL = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}/graphql.json"
 HEADERS = {
     "X-Shopify-Access-Token": API_TOKEN,
