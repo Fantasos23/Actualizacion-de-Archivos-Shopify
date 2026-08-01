@@ -112,7 +112,7 @@ def actualizar_producto_con_esquema(product_id, row):
         input_product["tags"] = [t.strip() for t in str(v_tags).split(',')]
 
     # ---------------------------------------------------------
-    # 2. METAFIELDS
+    # 2. METAFIELDS A NIVEL DE PRODUCTO
     # ---------------------------------------------------------
     metafields_input = []
     metafields_schema = SCHEMA.get("metafields", {})
@@ -142,7 +142,7 @@ def actualizar_producto_con_esquema(product_id, row):
         input_product["metafields"] = metafields_input
 
     # ---------------------------------------------------------
-    # 3. ACTUALIZAR PRODUCTO (DESCRIPCIÓN, VENDOR, TAGS, METAFIELDS)
+    # 3. ACTUALIZAR PRODUCTO PRINCIPAL (GraphQL)
     # ---------------------------------------------------------
     mutation_prod = """
     mutation productUpdate($input: ProductInput!) {
@@ -160,13 +160,14 @@ def actualizar_producto_con_esquema(product_id, row):
         errores_totales.extend(err_p)
 
     # ---------------------------------------------------------
-    # 4. CAMPOS A NIVEL DE VARIANTE (PRICE, SKU, TAXABLE)
+    # 4. CAMPOS A NIVEL DE VARIANTE (REST API - TAXABLE, PRICE, SKU)
     # ---------------------------------------------------------
     v_price = obtener_valor_fila(row, campos_estandar.get("price", {}).get("posibles_columnas_excel", []))
     v_sku = obtener_valor_fila(row, campos_estandar.get("sku", {}).get("posibles_columnas_excel", []))
     v_tax = obtener_valor_fila(row, campos_estandar.get("taxable", {}).get("posibles_columnas_excel", []))
 
     if v_price is not None or v_sku is not None or v_tax is not None:
+        # Obtener ID de la primera variante vía GraphQL
         query_var = """
         query getVariantId($id: ID!) {
           product(id: $id) {
@@ -184,42 +185,30 @@ def actualizar_producto_con_esquema(product_id, row):
         v_edges = res_var.get("data", {}).get("product", {}).get("variants", {}).get("edges", [])
 
         if v_edges:
-            variant_id = v_edges[0]["node"]["id"]
+            variant_gid = v_edges[0]["node"]["id"]
+            variant_numeric_id = variant_gid.split("/")[-1]
             
-            variant_input = {"id": variant_id}
+            variant_payload = {}
 
             if v_price is not None:
-                variant_input["price"] = str(v_price).strip()
+                variant_payload["price"] = str(v_price).strip()
 
             if v_sku is not None:
-                variant_input["sku"] = str(v_sku).strip()
+                variant_payload["sku"] = str(v_sku).strip()
 
             if v_tax is not None:
                 val_str = str(v_tax).strip().upper()
                 es_taxable = val_str in ["TRUE", "1", "SI", "SÍ", "YES"]
-                variant_input["taxable"] = es_taxable
+                variant_payload["taxable"] = es_taxable
 
-            # Mutación sin 'taxable' en el bloque de respuesta devuelta para evitar undefinedField
-            mutation_var = """
-            mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-              productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-                productVariants {
-                  id
-                }
-                userErrors {
-                  field
-                  message
-                }
-              }
-            }
-            """
-            res_v_update = ejecutar_graphql(mutation_var, {
-                "productId": product_id,
-                "variants": [variant_input]
-            })
-            err_v = res_v_update.get("data", {}).get("productVariantsBulkUpdate", {}).get("userErrors", [])
-            if err_v:
-                errores_totales.extend(err_v)
+            # Petición a la API REST de Variantes
+            REST_URL = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}"
+            url_variant_rest = f"{REST_URL}/variants/{variant_numeric_id}.json"
+            
+            res_rest = requests.put(url_variant_rest, json={"variant": variant_payload}, headers=HEADERS)
+            
+            if res_rest.status_code not in [200, 201]:
+                errores_totales.append({"field": ["variant"], "message": f"Error REST {res_rest.status_code}: {res_rest.text[:100]}"})
 
     return errores_totales
 
