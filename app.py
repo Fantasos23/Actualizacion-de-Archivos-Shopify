@@ -304,58 +304,58 @@ if st.session_state.get("procesado"):
 
         st.success(f"🎉 Proceso completado. Exitosos: {exitosos} | Errores: {errores}")
 # -------------------------------------------------------------
-# SECCIÓN: Subida de Imágenes Masiva por Código SERPI
+# SECCIÓN: Subida Asistida de Portadas por Nombre y Código SERPI
 # -------------------------------------------------------------
 st.divider()
-st.header("🖼️ Subida Masiva de Portadas por Código SERPI")
-st.write("Selecciona una o múltiples imágenes desde tu equipo. **El nombre de la imagen debe ser el código SERPI del libro** (ejemplo: `100245.jpg`, `SERPI-982.png`).")
+st.header("🖼️ Asignación Asistida de Portadas")
+st.write("Escribe el nombre del libro y/o su código SERPI para localizar exactamente el producto en Shopify antes de subir la imagen.")
 
-# Cargar archivos desde el explorador nativo del S.O.
-uploaded_images = st.file_uploader(
-    "Haz clic o arrastra aquí las imágenes a subir",
-    type=["jpg", "jpeg", "png", "webp"],
-    accept_multiple_files=True
-)
+col_nom, col_serpi = st.columns(2)
 
-if uploaded_images:
-    st.info(f"📁 Se han seleccionado {len(uploaded_images)} imagen(es) para procesar.")
+with col_nom:
+    nombre_input = st.text_input("📖 Nombre o Título del Libro", placeholder="Ej: El principito")
+
+with col_serpi:
+    serpi_input = st.text_input("🔢 Código SERPI", placeholder="Ej: 9780785396901")
+
+if st.button("🔍 Buscar Producto en Shopify"):
+    if not nombre_input.strip() and not serpi_input.strip():
+        st.warning("⚠️ Debes ingresar al menos el Nombre o el Código SERPI para realizar la búsqueda.")
+    else:
+        with st.spinner("Buscando coincidencias en Shopify..."):
+            resultados = buscar_producto_por_nombre_y_serpi(nombre_input, serpi_input)
+            st.session_state["busqueda_productos"] = resultados
+
+# Mostrar resultados encontrados si existen
+if "busqueda_productos" in st.session_state:
+    resultados = st.session_state["busqueda_productos"]
     
-    if st.button("🚀 Iniciar Vinculación de Imágenes a Shopify"):
-        progreso_img = st.progress(0)
-        status_img = st.empty()
+    if not resultados:
+        st.error("❌ No se encontró ningún producto que coincida con esos criterios.")
+    else:
+        st.success(f"✅ Se encontraron {len(resultados)} coincidencia(s):")
         
-        exitos = 0
-        fallos = 0
-        total_img = len(uploaded_images)
+        # Mapear opciones para el selector
+        opciones = {f"{item['title']} | SERPI: {item['serpi']} (ID: {item['id'].split('/')[-1]})": item for item in resultados}
         
-        for i, file_obj in enumerate(uploaded_images):
-            # Extraer el código SERPI quitando la extensión del archivo
-            serpi_code = Path(file_obj.name).stem.strip()
-            status_img.text(f"Buscando producto con Código SERPI: '{serpi_code}'...")
-            
-            try:
-                # 1. Buscar ID de Producto en Shopify usando el metafield
-                product_id, title = buscar_product_id_por_serpi(serpi_code)
+        seleccion = st.selectbox("Selecciona el producto exacto al que pertenece la portada:", list(opciones.keys()))
+        producto_seleccionado = opciones[seleccion]
+
+        st.info(f"📌 Producto Seleccionado: **{producto_seleccionado['title']}** (SERPI Metafield: `{producto_seleccionado['serpi']}`)")
+
+        # Selector de imagen para el producto confirmado
+        uploaded_image = st.file_uploader(
+            "Selecciona la imagen de la portada desde tu equipo",
+            type=["jpg", "jpeg", "png", "webp"],
+            accept_multiple_files=False
+        )
+
+        if uploaded_image and st.button("🚀 Subir Imagen y Asignar a este Producto"):
+            with st.spinner("Subiendo portada e integrando a la galería de Shopify..."):
+                file_bytes = uploaded_image.read()
+                ok, msg = cargar_imagen_a_shopify(producto_seleccionado["id"], file_bytes, uploaded_image.name)
                 
-                if product_id:
-                    # 2. Leer bytes del archivo e invocar carga al CDN
-                    bytes_data = file_obj.read()
-                    ok, msg = cargar_imagen_a_shopify(product_id, bytes_data, file_obj.name)
-                    
-                    if ok:
-                        st.success(f"✅ [{serpi_code}] Imagen asignada a: **{title}**")
-                        exitos += 1
-                    else:
-                        st.error(f"❌ [{serpi_code}] Error al subir la imagen: {msg}")
-                        fallos += 1
+                if ok:
+                    st.success(f"🎉 ¡Portada asignada exitosamente al libro **{producto_seleccionado['title']}**!")
                 else:
-                    st.warning(f"⚠️ [{serpi_code}] No se encontró ningún producto con este metafield custom.serpi.")
-                    fallos += 1
-                    
-            except Exception as e:
-                st.error(f"❌ [{serpi_code}] Error inesperado: {e}")
-                fallos += 1
-
-            progreso_img.progress((i + 1) / total_img)
-
-        st.success(f"🎉 Proceso de imágenes finalizado. Exitosas: {exitos} | Fallidas/No encontradas: {fallos}")
+                    st.error(f"❌ Error al subir la imagen: {msg}")
