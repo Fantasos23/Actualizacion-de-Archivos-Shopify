@@ -4,7 +4,6 @@ import requests
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Cargar variables de entorno
 base_dir = Path(__file__).parent
 load_dotenv(dotenv_path=base_dir / '.env')
 load_dotenv(dotenv_path=base_dir / 'Shopify.env')
@@ -30,14 +29,14 @@ def ejecutar_graphql(query, variables=None):
         return res.json()
     raise Exception(f"HTTP {res.status_code}: {res.text}")
 
-def buscar_product_id_por_serpi(serpi_code):
+def buscar_producto_por_nombre_y_serpi(nombre_libro, codigo_serpi):
     """
-    Busca un producto en Shopify y valida mediante coincidencia exacta 
-    que su metafield 'custom.serpi' sea idéntico al código buscado.
+    Busca productos en Shopify filtrando por Nombre y valida de forma estricta 
+    que el metafield custom.serpi o el título coincida con la búsqueda.
     """
     query = """
-    query buscarPorSerpi($query: String!) {
-      products(first: 5, query: $query) {
+    query buscarProducto($query: String!) {
+      products(first: 10, query: $query) {
         edges {
           node {
             id
@@ -51,47 +50,50 @@ def buscar_product_id_por_serpi(serpi_code):
       }
     }
     """
-    # Limpiamos el código para evitar espacios o caracteres invisibles
-    code_clean = str(serpi_code).strip()
-    search_query = f"metafields.custom.serpi:'{code_clean}'"
+    # Construir búsqueda combinada
+    terminos = []
+    if nombre_libro.strip():
+        terminos.append(f"title:*'{nombre_libro.strip()}'*")
+    if codigo_serpi.strip():
+        terminos.append(f"metafields.custom.serpi:'{codigo_serpi.strip()}'")
+        
+    search_query = " AND ".join(terminos) if terminos else "status:active"
     
     res = ejecutar_graphql(query, {"query": search_query})
-    products = res.get("data", {}).get("products", {}).get("edges", [])
+    products_edges = res.get("data", {}).get("products", {}).get("edges", [])
     
-    # Recorremos los resultados y validamos coincidencia exacta de metafield
-    for edge in products:
+    resultados = []
+    serpi_clean = codigo_serpi.strip()
+
+    for edge in products_edges:
         node = edge["node"]
-        metafield_obj = node.get("metafield")
+        meta_val = node.get("metafield", {}).get("value") if node.get("metafield") else "Sin código SERPI"
         
-        if metafield_obj and metafield_obj.get("value"):
-            valor_metafield = str(metafield_obj["value"]).strip()
-            
-            # Validación estricta
-            if valor_metafield == code_clean:
-                return node["id"], node["title"]
-    
-    # Si ningún producto coincide exactamente
-    return None, None
+        # Guardar resultados candidatos con su información explicita
+        resultados.append({
+            "id": node["id"],
+            "title": node["title"],
+            "serpi": meta_val,
+            "handle": node["handle"]
+        })
+        
+    return resultados
 
 def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
     """
-    Sube la imagen directamente a Shopify enviándola en formato Base64.
-    ¡Esto omite el CDN de GCS/S3 y evita errores de firma por completo!
+    Sube la imagen directamente al producto en Shopify enviando Base64 (Método probado sin errores CDN).
     """
     try:
-        # Extraer el ID numérico de Shopify del formato GraphQL (gid://shopify/Product/123456)
         product_numeric_id = product_id.split("/")[-1]
-        
-        # Convertir la imagen a Base64
         base64_image = base64.b64encode(file_bytes).decode('utf-8')
         
-        # Endpoint de imágenes del producto
         url_endpoint = f"{REST_URL}/products/{product_numeric_id}/images.json"
         
         payload = {
             "image": {
                 "attachment": base64_image,
                 "filename": file_name,
+                "position": 1,
                 "alt": f"Portada SERPI {file_name}"
             }
         }
