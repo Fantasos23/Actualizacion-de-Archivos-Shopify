@@ -1,5 +1,8 @@
 import os
+import json
 import requests
+import urllib.request
+import urllib.parse
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -28,9 +31,6 @@ def ejecutar_graphql(query, variables=None):
     raise Exception(f"HTTP {res.status_code}: {res.text}")
 
 def buscar_product_id_por_serpi(serpi_code):
-    """
-    Busca el ID de producto en Shopify filtrando por el Metafield custom.serpi
-    """
     query = """
     query buscarPorSerpi($query: String!) {
       products(first: 1, query: $query) {
@@ -54,20 +54,17 @@ def buscar_product_id_por_serpi(serpi_code):
 
 def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
     """
-    Sube la imagen al CDN de Shopify respetando la firma de Amazon/GCS
+    Sube la imagen al CDN respetando de forma estricta el multipart de S3/GCS
     """
     file_size = str(len(file_bytes))
     ext = file_name.split('.')[-1].lower()
     
-    if ext in ["jpg", "jpeg"]:
-        mime = "image/jpeg"
-    elif ext == "png":
+    mime = "image/jpeg"
+    if ext == "png":
         mime = "image/png"
     elif ext == "webp":
         mime = "image/webp"
-    else:
-        mime = "image/jpeg"
-    
+
     # 1. Solicitar la URL de carga (Staged Upload)
     mutation_stage = """
     mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
@@ -95,14 +92,8 @@ def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
     }
     
     res_stage = ejecutar_graphql(mutation_stage, payload_stage)
-    data_stage = res_stage.get("data", {}).get("stagedUploadsCreate", {})
-    user_errors = data_stage.get("userErrors", [])
+    targets = res_stage.get("data", {}).get("stagedUploadsCreate", {}).get("stagedTargets", [])
     
-    if user_errors:
-        msg_err = ", ".join([e["message"] for e in user_errors])
-        return False, f"Shopify GraphQL Error: {msg_err}"
-        
-    targets = data_stage.get("stagedTargets", [])
     if not targets:
         return False, "Shopify no devolvió URL de carga."
         
@@ -110,23 +101,41 @@ def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
     upload_url = target["url"]
     resource_url = target["resourceUrl"]
     
-    # 2. Armar el payload ordenado de parámetros
-    # Para evitar SignatureDoesNotMatch, la tupla del archivo 'file' DEBE incluir la lista
-    # exacta de campos entregados por Shopify
-    multipart_data = []
+    # 2. Construir multipart/form-data nativo para evitar corrupción de firma
+    boundary = "----WebKitFormBoundaryShopifyPythonSync"
+    body = bytearray()
+
+    # Agregar cada parámetro entregado por Shopify
     for param in target["parameters"]:
-        multipart_data.append((param["name"], (None, param["value"])))
+        body.extend(f"--{boundary}\r\n".encode('utf-8'))
+        body.extend(f'Content-Disposition: form-data; name="{param["name"]}"\r\n\r\n'.encode('utf-8'))
+        body.extend(f'{param["value"]}\r\n'.encode('utf-8'))
 
-    # Adjuntar el archivo físico al final de las tuplas multipart
-    multipart_data.append(('file', (file_name, file_bytes, mime)))
+    # Agregar el archivo físico 'file' como último elemento
+    body.extend(f"--{boundary}\r\n".encode('utf-8'))
+    body.extend(f'Content-Disposition: form-data; name="file"; filename="{file_name}"\r\n'.encode('utf-8'))
+    body.extend(f'Content-Type: {mime}\r\n\r\n'.encode('utf-8'))
+    body.extend(file_bytes)
+    body.extend(f"\r\n--{boundary}--\r\n".encode('utf-8'))
 
-    # Realizar el POST al CDN de carga sin headers custom
-    res_upload = requests.post(upload_url, files=multipart_data)
-    
-    if res_upload.status_code not in [200, 201]:
-        return False, f"Error en CDN HTTP {res_upload.status_code}: {res_upload.text[:120]}"
+    req = urllib.request.Request(
+        upload_url,
+        data=bytes(body),
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}"
+        },
+        method="POST"
+    )
 
-    # 3. Vincular la imagen al producto mediante GraphQL
+    try:
+        with urllib.request.urlopen(req) as response:
+            if response.status not in [200, 201]:
+                return False, f"Error CDN HTTP {response.status}"
+    except urllib.error.HTTPError as e:
+        err_msg = e.read().decode('utf-8', errors='ignore')
+        return False, f"Error CDN HTTP {e.code}: {err_msg[:120]}"
+
+    # 3. Vincular la imagen al Producto
     mutation_media = """
     mutation productCreateMedia($media: [CreateMediaInput!]!, $productId: ID!) {
       productCreateMedia(media: $media, productId: $productId) {
