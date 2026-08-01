@@ -8,10 +8,6 @@ base_dir = Path(__file__).parent
 load_dotenv(dotenv_path=base_dir / '.env')
 load_dotenv(dotenv_path=base_dir / 'Shopify.env')
 
-RAW_SHOP_URL = os.getenv("SHOPIFY_SHOP_URL", "").replace("https://", "").replace("http://", "").strip("/")
-API_TOKEN = os.getenv("SHOPIFY_API_TOKEN", "").strip()
-API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2026-04").strip()
-
 GRAPHQL_URL = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}/graphql.json"
 HEADERS = {
     "X-Shopify-Access-Token": API_TOKEN,
@@ -76,9 +72,16 @@ def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
     }
     """
     
-    # Determinar tipo MIME
+    # Determinar tipo MIME exacto
     ext = file_name.split('.')[-1].lower()
-    mime = "image/png" if ext == "png" else "image/webp" if ext == "webp" else "image/jpeg"
+    if ext in ["jpg", "jpeg"]:
+        mime = "image/jpeg"
+    elif ext == "png":
+        mime = "image/png"
+    elif ext == "webp":
+        mime = "image/webp"
+    else:
+        mime = "image/jpeg"
     
     payload_stage = {
         "input": [{
@@ -98,14 +101,24 @@ def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
     target = targets[0]
     upload_url = target["url"]
     resource_url = target["resourceUrl"]
-    params = {p["name"]: p["value"] for p in target["parameters"]}
     
-    # 2. Subir archivo físico al servidor CDN
-    res_upload = requests.post(upload_url, data=params, files={"file": file_bytes})
-    if res_upload.status_code not in [200, 201]:
-        return False, f"Error en CDN HTTP {res_upload.status_code}"
+    # Construir el formulario de parámetros para Amazon S3 / Shopify CDN
+    form_data = {}
+    for param in target["parameters"]:
+        form_data[param["name"]] = param["value"]
 
-    # 3. Vincular la imagen subida con el producto
+    # El archivo DEBE ir al final de los parámetros
+    files_payload = {
+        'file': (file_name, file_bytes, mime)
+    }
+
+    # 2. Subir archivo físico al CDN (sin headers de Shopify)
+    res_upload = requests.post(upload_url, data=form_data, files=files_payload)
+    
+    if res_upload.status_code not in [200, 201]:
+        return False, f"Error en CDN HTTP {res_upload.status_code} - {res_upload.text[:100]}"
+
+    # 3. Vincular la imagen subida con el producto vía GraphQL
     mutation_media = """
     mutation productCreateMedia($media: [CreateMediaInput!]!, $productId: ID!) {
       productCreateMedia(media: $media, productId: $productId) {
