@@ -142,7 +142,7 @@ def actualizar_producto_con_esquema(product_id, row):
         input_product["metafields"] = metafields_input
 
     # ---------------------------------------------------------
-    # 3. ACTUALIZAR PRODUCTO PRINCIPAL (DESCRIPCIÓN, VENDOR, TAGS, METAFIELDS)
+    # 3. ACTUALIZAR PRODUCTO (DESCRIPCIÓN, VENDOR, TAGS, METAFIELDS)
     # ---------------------------------------------------------
     mutation_prod = """
     mutation productUpdate($input: ProductInput!) {
@@ -167,7 +167,6 @@ def actualizar_producto_con_esquema(product_id, row):
     v_tax = obtener_valor_fila(row, campos_estandar.get("taxable", {}).get("posibles_columnas_excel", []))
 
     if v_price is not None or v_sku is not None or v_tax is not None:
-        # Obtener el ID de la primera variante
         query_var = """
         query getVariantId($id: ID!) {
           product(id: $id) {
@@ -187,7 +186,6 @@ def actualizar_producto_con_esquema(product_id, row):
         if v_edges:
             variant_id = v_edges[0]["node"]["id"]
             
-            # Construir la entrada para productVariantUpdate (ProductVariantInput)
             variant_input = {"id": variant_id}
 
             if v_price is not None:
@@ -201,13 +199,12 @@ def actualizar_producto_con_esquema(product_id, row):
                 es_taxable = val_str in ["TRUE", "1", "SI", "SÍ", "YES"]
                 variant_input["taxable"] = es_taxable
 
-            # Mutación nativa individual para variantes
+            # Mutación sin 'taxable' en el bloque de respuesta devuelta para evitar undefinedField
             mutation_var = """
-            mutation productVariantUpdate($input: ProductVariantInput!) {
-              productVariantUpdate(input: $input) {
-                productVariant {
+            mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+              productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+                productVariants {
                   id
-                  taxable
                 }
                 userErrors {
                   field
@@ -216,8 +213,11 @@ def actualizar_producto_con_esquema(product_id, row):
               }
             }
             """
-            res_v_update = ejecutar_graphql(mutation_var, {"input": variant_input})
-            err_v = res_v_update.get("data", {}).get("productVariantUpdate", {}).get("userErrors", [])
+            res_v_update = ejecutar_graphql(mutation_var, {
+                "productId": product_id,
+                "variants": [variant_input]
+            })
+            err_v = res_v_update.get("data", {}).get("productVariantsBulkUpdate", {}).get("userErrors", [])
             if err_v:
                 errores_totales.extend(err_v)
 
