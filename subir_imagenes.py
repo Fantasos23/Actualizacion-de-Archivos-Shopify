@@ -32,27 +32,45 @@ def ejecutar_graphql(query, variables=None):
 
 def buscar_product_id_por_serpi(serpi_code):
     """
-    Busca el ID único de un producto en Shopify filtrando por el Metafield custom.serpi
+    Busca un producto en Shopify y valida mediante coincidencia exacta 
+    que su metafield 'custom.serpi' sea idéntico al código buscado.
     """
     query = """
     query buscarPorSerpi($query: String!) {
-      products(first: 1, query: $query) {
+      products(first: 5, query: $query) {
         edges {
           node {
             id
             title
             handle
+            metafield(namespace: "custom", key: "serpi") {
+              value
+            }
           }
         }
       }
     }
     """
-    search_query = f"metafields.custom.serpi:'{serpi_code}'"
+    # Limpiamos el código para evitar espacios o caracteres invisibles
+    code_clean = str(serpi_code).strip()
+    search_query = f"metafields.custom.serpi:'{code_clean}'"
+    
     res = ejecutar_graphql(query, {"query": search_query})
     products = res.get("data", {}).get("products", {}).get("edges", [])
     
-    if products:
-        return products[0]["node"]["id"], products[0]["node"]["title"]
+    # Recorremos los resultados y validamos coincidencia exacta de metafield
+    for edge in products:
+        node = edge["node"]
+        metafield_obj = node.get("metafield")
+        
+        if metafield_obj and metafield_obj.get("value"):
+            valor_metafield = str(metafield_obj["value"]).strip()
+            
+            # Validación estricta
+            if valor_metafield == code_clean:
+                return node["id"], node["title"]
+    
+    # Si ningún producto coincide exactamente
     return None, None
 
 def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
