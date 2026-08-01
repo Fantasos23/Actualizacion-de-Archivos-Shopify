@@ -6,7 +6,7 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
-from subir_imagenes import buscar_product_id_por_serpi, cargar_imagen_a_shopify
+from subir_imagenes import buscar_producto_por_nombre_y_serpi, cargar_imagen_a_shopify
 
 # -------------------------------------------------------------
 # 1. Configuración de Entorno y Conexión API
