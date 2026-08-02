@@ -273,7 +273,7 @@ if st.session_state.get("procesado"):
 
     st.divider()
     st.subheader(f"3. Datos Listos para Actualizar (Origen: {origen})")
-    st.dataframe(df_data.head(10), width="stretch"
+    st.dataframe(df_data.head(10), width="stretch")
 
     # -------------------------------------------------------------
     # DETECCIÓN DE CAMPOS PRESENTES Y SELECTOR INTERACTIVO
