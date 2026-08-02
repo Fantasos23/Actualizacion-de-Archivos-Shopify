@@ -86,30 +86,37 @@ def obtener_product_id_por_handle(handle):
 # -------------------------------------------------------------
 # 4. Proceso de Actualización Basado en Esquema
 # -------------------------------------------------------------
-def actualizar_producto_con_esquema(product_id, row):
+def actualizar_producto_con_esquema(product_id, row, campos_permitidos=None):
+    """
+    Actualiza solo los campos especificados en 'campos_permitidos'.
+    Si 'campos_permitidos' es None, actualiza todos los campos presentes.
+    """
     errores_totales = []
     campos_estandar = SCHEMA.get("campos_estandar", {})
-    
     input_product = {"id": product_id}
     
     # ---------------------------------------------------------
     # 1. CAMPOS ESTÁNDAR A NIVEL DE PRODUCTO
     # ---------------------------------------------------------
-    v_desc = obtener_valor_fila(row, campos_estandar.get("descriptionHtml", {}).get("posibles_columnas_excel", []))
-    if v_desc is not None:
-        input_product["descriptionHtml"] = str(v_desc)
+    if campos_permitidos is None or "descriptionHtml" in campos_permitidos:
+        v_desc = obtener_valor_fila(row, campos_estandar.get("descriptionHtml", {}).get("posibles_columnas_excel", []))
+        if v_desc is not None:
+            input_product["descriptionHtml"] = str(v_desc)
 
-    v_vendor = obtener_valor_fila(row, campos_estandar.get("vendor", {}).get("posibles_columnas_excel", []))
-    if v_vendor is not None:
-        input_product["vendor"] = str(v_vendor)
+    if campos_permitidos is None or "vendor" in campos_permitidos:
+        v_vendor = obtener_valor_fila(row, campos_estandar.get("vendor", {}).get("posibles_columnas_excel", []))
+        if v_vendor is not None:
+            input_product["vendor"] = str(v_vendor)
 
-    v_type = obtener_valor_fila(row, campos_estandar.get("productType", {}).get("posibles_columnas_excel", []))
-    if v_type is not None:
-        input_product["productType"] = str(v_type)
+    if campos_permitidos is None or "productType" in campos_permitidos:
+        v_type = obtener_valor_fila(row, campos_estandar.get("productType", {}).get("posibles_columnas_excel", []))
+        if v_type is not None:
+            input_product["productType"] = str(v_type)
 
-    v_tags = obtener_valor_fila(row, campos_estandar.get("tags", {}).get("posibles_columnas_excel", []))
-    if v_tags is not None:
-        input_product["tags"] = [t.strip() for t in str(v_tags).split(',')]
+    if campos_permitidos is None or "tags" in campos_permitidos:
+        v_tags = obtener_valor_fila(row, campos_estandar.get("tags", {}).get("posibles_columnas_excel", []))
+        if v_tags is not None:
+            input_product["tags"] = [t.strip() for t in str(v_tags).split(',')]
 
     # ---------------------------------------------------------
     # 2. METAFIELDS A NIVEL DE PRODUCTO
@@ -118,6 +125,10 @@ def actualizar_producto_con_esquema(product_id, row):
     metafields_schema = SCHEMA.get("metafields", {})
     
     for key_meta, info_meta in metafields_schema.items():
+        # Validar si este metafield está en los campos permitidos
+        if campos_permitidos is not None and key_meta not in campos_permitidos:
+            continue
+            
         v_meta = obtener_valor_fila(row, info_meta.get("posibles_columnas_excel", []))
         if v_meta is not None:
             v_meta_str = str(v_meta).strip()
@@ -141,33 +152,39 @@ def actualizar_producto_con_esquema(product_id, row):
     if metafields_input:
         input_product["metafields"] = metafields_input
 
-    # ---------------------------------------------------------
-    # 3. ACTUALIZAR PRODUCTO PRINCIPAL (GraphQL)
-    # ---------------------------------------------------------
-    mutation_prod = """
-    mutation productUpdate($input: ProductInput!) {
-      productUpdate(input: $input) {
-        userErrors {
-          field
-          message
+    # Ejecutar actualización a nivel de producto si hay cambios
+    if len(input_product) > 1: # tiene más que solo 'id'
+        mutation_prod = """
+        mutation productUpdate($input: ProductInput!) {
+          productUpdate(input: $input) {
+            userErrors {
+              field
+              message
+            }
+          }
         }
-      }
-    }
-    """
-    res_prod = ejecutar_graphql(mutation_prod, {"input": input_product})
-    err_p = res_prod.get("data", {}).get("productUpdate", {}).get("userErrors", [])
-    if err_p:
-        errores_totales.extend(err_p)
+        """
+        res_prod = ejecutar_graphql(mutation_prod, {"input": input_product})
+        err_p = res_prod.get("data", {}).get("productUpdate", {}).get("userErrors", [])
+        if err_p:
+            errores_totales.extend(err_p)
 
     # ---------------------------------------------------------
-    # 4. CAMPOS A NIVEL DE VARIANTE (REST API - TAXABLE, PRICE, SKU)
+    # 3. CAMPOS A NIVEL DE VARIANTE (REST API - TAXABLE, PRICE, SKU)
     # ---------------------------------------------------------
-    v_price = obtener_valor_fila(row, campos_estandar.get("price", {}).get("posibles_columnas_excel", []))
-    v_sku = obtener_valor_fila(row, campos_estandar.get("sku", {}).get("posibles_columnas_excel", []))
-    v_tax = obtener_valor_fila(row, campos_estandar.get("taxable", {}).get("posibles_columnas_excel", []))
+    v_price = None
+    if campos_permitidos is None or "price" in campos_permitidos:
+        v_price = obtener_valor_fila(row, campos_estandar.get("price", {}).get("posibles_columnas_excel", []))
+
+    v_sku = None
+    if campos_permitidos is None or "sku" in campos_permitidos:
+        v_sku = obtener_valor_fila(row, campos_estandar.get("sku", {}).get("posibles_columnas_excel", []))
+
+    v_tax = None
+    if campos_permitidos is None or "taxable" in campos_permitidos:
+        v_tax = obtener_valor_fila(row, campos_estandar.get("taxable", {}).get("posibles_columnas_excel", []))
 
     if v_price is not None or v_sku is not None or v_tax is not None:
-        # Obtener ID de la primera variante vía GraphQL
         query_var = """
         query getVariantId($id: ID!) {
           product(id: $id) {
@@ -201,7 +218,6 @@ def actualizar_producto_con_esquema(product_id, row):
                 es_taxable = val_str in ["TRUE", "1", "SI", "SÍ", "YES"]
                 variant_payload["taxable"] = es_taxable
 
-            # Petición a la API REST de Variantes
             REST_URL = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}"
             url_variant_rest = f"{REST_URL}/variants/{variant_numeric_id}.json"
             
@@ -211,7 +227,6 @@ def actualizar_producto_con_esquema(product_id, row):
                 errores_totales.append({"field": ["variant"], "message": f"Error REST {res_rest.status_code}: {res_rest.text[:100]}"})
 
     return errores_totales
-
 # -------------------------------------------------------------
 # 5. Interfaz Visual Streamlit
 # -------------------------------------------------------------
@@ -260,46 +275,80 @@ if st.session_state.get("procesado"):
     st.subheader(f"3. Datos Listos para Actualizar (Origen: {origen})")
     st.dataframe(df_data.head(10), use_container_width=True)
 
-    if st.button("📤 Actualizar en Shopify vía GraphQL API"):
-        st.warning("⚠️ Iniciando actualización masiva según esquema... No cierres la ventana.")
-        
-        progreso = st.progress(0)
-        status_text = st.empty()
-        total = len(df_data)
-        exitosos = 0
-        errores = 0
+    # -------------------------------------------------------------
+    # DETECCIÓN DE CAMPOS PRESENTES Y SELECTOR INTERACTIVO
+    # -------------------------------------------------------------
+    st.subheader("⚙️ Selección de Campos a Actualizar")
+    st.write("Selecciona únicamente los campos que deseas enviar a Shopify:")
 
-        for i, row in df_data.iterrows():
-            handle = obtener_valor_fila(row, ['Handle', 'handle', 'product_handle'])
-            
-            if not handle:
-                continue
+    campos_detectados = {}
+    columnas_excel = list(df_data.columns)
 
-            try:
-                product_id = obtener_product_id_por_handle(handle)
-                if product_id:
-                    user_errors = actualizar_producto_con_esquema(product_id, row)
-                    if not user_errors:
-                        exitosos += 1
+    # 1. Analizar Campos Estándar presentes en el archivo
+    for key_std, info_std in SCHEMA.get("campos_estandar", {}).items():
+        posibles = info_std.get("posibles_columnas_excel", [])
+        if any(col in columnas_excel for col in posibles):
+            nombre_mostrar = info_std.get("nombre", key_std)
+            campos_detectados[key_std] = f"📌 {nombre_mostrar} (`{key_std}`)"
+
+    # 2. Analizar Metafields presentes en el archivo
+    for key_meta, info_meta in SCHEMA.get("metafields", {}).items():
+        posibles = info_meta.get("posibles_columnas_excel", [])
+        if any(col in columnas_excel for col in posibles):
+            nombre_mostrar = info_meta.get("name", key_meta)
+            campos_detectados[key_meta] = f"🏷️ Metafield: {nombre_mostrar} (`custom.{key_meta}`)"
+
+    if not campos_detectados:
+        st.warning("⚠️ No se detectaron campos reconocibles por el esquema en tu archivo.")
+    else:
+        # Selector multiselect de campos
+        seleccionados_keys = st.multiselect(
+            "Campos autorizados para actualizar en Shopify:",
+            options=list(campos_detectados.keys()),
+            default=list(campos_detectados.keys()),
+            format_func=lambda k: campos_detectados[k]
+        )
+
+        st.caption(f"Se actualizarán únicamente **{len(seleccionados_keys)}** campo(s) seleccionado(s).")
+
+        # Botón para iniciar el proceso con los campos seleccionados
+        if st.button("🚀 Actualizar en Shopify vía GraphQL API"):
+            if not seleccionados_keys:
+                st.error("❌ Debes seleccionar al menos un campo para actualizar.")
+            else:
+                st.warning("⚠️ Iniciando actualización masiva según campos seleccionados... No cierres la ventana.")
+                
+                progreso = st.progress(0)
+                status_text = st.empty()
+                total = len(df_data)
+                exitos = 0
+                errores_lista = []
+
+                for idx, row in df_data.iterrows():
+                    status_text.text(f"Procesando registro {idx + 1} de {total}...")
+                    
+                    product_id, handle_or_serpi = obtener_product_id_por_fila(row)
+                    
+                    if product_id:
+                        # Pasamos la lista de campos autorizados 'campos_permitidos'
+                        errs = actualizar_producto_con_esquema(product_id, row, campos_permitidos=seleccionados_keys)
+                        if not errs:
+                            exitos += 1
+                        else:
+                            msg = ", ".join([f"{e.get('field')}: {e.get('message')}" for e in errs])
+                            errores_lista.append(f"Fila {idx+1} ({handle_or_serpi}): {msg}")
                     else:
-                        msg_err = ", ".join([e["message"] for e in user_errors])
-                        st.error(f"❌ Error en {handle}: {msg_err}")
-                        errores += 1
-                else:
-                    st.error(f"❌ Handle '{handle}' no encontrado en Shopify.")
-                    errores += 1
+                        errores_lista.append(f"Fila {idx+1}: No se encontró el producto en Shopify.")
+                    
+                    progreso.progress((idx + 1) / total)
 
-            except Exception as e:
-                if "429" in str(e) or "THROTTLED" in str(e):
-                    time.sleep(2)
-                st.error(f"❌ Error de procesamiento en {handle}: {e}")
-                errores += 1
+                status_text.empty()
+                st.success(f"🎉 Proceso finalizado. Exitosos: {exitos} | Errores: {len(errores_lista)}")
 
-            time.sleep(0.05)
-            progreso.progress((i + 1) / total)
-            status_text.text(f"Procesando {i + 1} de {total}... (Éxitos: {exitosos} | Errores: {errores})")
-
-        st.success(f"🎉 Proceso completado. Exitosos: {exitosos} | Errores: {errores}")
+                if errores_lista:
+                    with st.expander("Ver detalle de errores"):
+                        for err in errores_lista:
+                            st.write(f"- {err}")
 # -------------------------------------------------------------
 # SECCIÓN: Subida Asistida de Portadas por Nombre y Código SERPI
 # -------------------------------------------------------------
