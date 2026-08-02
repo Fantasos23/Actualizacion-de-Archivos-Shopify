@@ -64,24 +64,52 @@ def obtener_valor_fila(row, lista_columnas_posibles):
                 return str(val).strip()
     return None
 
-def obtener_product_id_por_handle(handle):
-    query = """
-    query getProductId($query: String!) {
-      products(first: 1, query: $query) {
-        edges {
-          node {
-            id
-            handle
+def obtener_product_id(row):
+    """
+    Busca el ID del producto en Shopify primero por Handle
+    y si no existe, lo busca por el código SERPI.
+    """
+    # 1. Intentar buscar por Handle
+    v_handle = obtener_valor_fila(row, ["Handle", "handle", "URL Handle"])
+    if v_handle:
+        query_h = """
+        query getProductId($query: String!) {
+          products(first: 1, query: $query) {
+            edges {
+              node {
+                id
+                handle
+              }
+            }
           }
         }
-      }
-    }
-    """
-    data = ejecutar_graphql(query, {"query": f"handle:{handle}"})
-    products = data.get("data", {}).get("products", {}).get("edges", [])
-    if products:
-        return products[0]["node"]["id"]
-    return None
+        """
+        data = ejecutar_graphql(query_h, {"query": f"handle:'{v_handle}'"})
+        products = data.get("data", {}).get("products", {}).get("edges", [])
+        if products:
+            return products[0]["node"]["id"], v_handle
+
+    # 2. Intentar buscar por Metafield custom.serpi
+    v_serpi = obtener_valor_fila(row, ["serpi", "custom.serpi", "serpi (product.metafields.custom.serpi)", "SERPI"])
+    if v_serpi:
+        query_s = """
+        query getProductBySerpi($query: String!) {
+          products(first: 1, query: $query) {
+            edges {
+              node {
+                id
+                handle
+              }
+            }
+          }
+        }
+        """
+        data = ejecutar_graphql(query_s, {"query": f"metafields.custom.serpi:'{v_serpi}'"})
+        products = data.get("data", {}).get("products", {}).get("edges", [])
+        if products:
+            return products[0]["node"]["id"], f"SERPI: {v_serpi}"
+
+    return None, None
 
 # -------------------------------------------------------------
 # 4. Proceso de Actualización Basado en Esquema
@@ -125,7 +153,6 @@ def actualizar_producto_con_esquema(product_id, row, campos_permitidos=None):
     metafields_schema = SCHEMA.get("metafields", {})
     
     for key_meta, info_meta in metafields_schema.items():
-        # Validar si este metafield está en los campos permitidos
         if campos_permitidos is not None and key_meta not in campos_permitidos:
             continue
             
@@ -153,7 +180,7 @@ def actualizar_producto_con_esquema(product_id, row, campos_permitidos=None):
         input_product["metafields"] = metafields_input
 
     # Ejecutar actualización a nivel de producto si hay cambios
-    if len(input_product) > 1: # tiene más que solo 'id'
+    if len(input_product) > 1:
         mutation_prod = """
         mutation productUpdate($input: ProductInput!) {
           productUpdate(input: $input) {
@@ -227,6 +254,7 @@ def actualizar_producto_con_esquema(product_id, row, campos_permitidos=None):
                 errores_totales.append({"field": ["variant"], "message": f"Error REST {res_rest.status_code}: {res_rest.text[:100]}"})
 
     return errores_totales
+
 # -------------------------------------------------------------
 # 5. Interfaz Visual Streamlit
 # -------------------------------------------------------------
@@ -301,7 +329,6 @@ if st.session_state.get("procesado"):
     if not campos_detectados:
         st.warning("⚠️ No se detectaron campos reconocibles por el esquema en tu archivo.")
     else:
-        # Selector multiselect de campos
         seleccionados_keys = st.multiselect(
             "Campos autorizados para actualizar en Shopify:",
             options=list(campos_detectados.keys()),
@@ -311,8 +338,7 @@ if st.session_state.get("procesado"):
 
         st.caption(f"Se actualizarán únicamente **{len(seleccionados_keys)}** campo(s) seleccionado(s).")
 
-        # Botón para iniciar el proceso con los campos seleccionados
-        if st.button("🚀 Actualizar en Shopify vía GraphQL API"):
+        if st.button("🚀 Actualizar en Shopify vía API"):
             if not seleccionados_keys:
                 st.error("❌ Debes seleccionar al menos un campo para actualizar.")
             else:
@@ -330,7 +356,6 @@ if st.session_state.get("procesado"):
                     product_id, handle_or_serpi = obtener_product_id(row)
                     
                     if product_id:
-                        # Pasamos la lista de campos autorizados 'campos_permitidos'
                         errs = actualizar_producto_con_esquema(product_id, row, campos_permitidos=seleccionados_keys)
                         if not errs:
                             exitos += 1
@@ -349,6 +374,7 @@ if st.session_state.get("procesado"):
                     with st.expander("Ver detalle de errores"):
                         for err in errores_lista:
                             st.write(f"- {err}")
+
 # -------------------------------------------------------------
 # SECCIÓN: Subida Asistida de Portadas por Nombre y Código SERPI
 # -------------------------------------------------------------
@@ -372,7 +398,6 @@ if st.button("🔍 Buscar Producto en Shopify"):
             resultados = buscar_producto_por_nombre_y_serpi(nombre_input, serpi_input)
             st.session_state["busqueda_productos"] = resultados
 
-# Mostrar resultados encontrados si existen
 if "busqueda_productos" in st.session_state:
     resultados = st.session_state["busqueda_productos"]
     
@@ -381,7 +406,6 @@ if "busqueda_productos" in st.session_state:
     else:
         st.success(f"✅ Se encontraron {len(resultados)} coincidencia(s):")
         
-        # Mapear opciones para el selector
         opciones = {f"{item['title']} | SERPI: {item['serpi']} (ID: {item['id'].split('/')[-1]})": item for item in resultados}
         
         seleccion = st.selectbox("Selecciona el producto exacto al que pertenece la portada:", list(opciones.keys()))
@@ -389,7 +413,6 @@ if "busqueda_productos" in st.session_state:
 
         st.info(f"📌 Producto Seleccionado: **{producto_seleccionado['title']}** (SERPI Metafield: `{producto_seleccionado['serpi']}`)")
 
-        # Selector de imagen para el producto confirmado
         uploaded_image = st.file_uploader(
             "Selecciona la imagen de la portada desde tu equipo",
             type=["jpg", "jpeg", "png", "webp"],
