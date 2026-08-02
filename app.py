@@ -248,10 +248,23 @@ def actualizar_producto_con_esquema(product_id, row, campos_permitidos=None):
             REST_URL = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}"
             url_variant_rest = f"{REST_URL}/variants/{variant_numeric_id}.json"
             
-            res_rest = requests.put(url_variant_rest, json={"variant": variant_payload}, headers=HEADERS)
+            # Petición a la API REST con reintentos automáticos
+            exito_rest = False
+            intentos = 0
             
-            if res_rest.status_code not in [200, 201]:
-                errores_totales.append({"field": ["variant"], "message": f"Error REST {res_rest.status_code}: {res_rest.text[:100]}"})
+            while not exito_rest and intentos < 3:
+                try:
+                    res_rest = requests.put(url_variant_rest, json={"variant": variant_payload}, headers=HEADERS, timeout=10)
+                    if res_rest.status_code in [200, 201]:
+                        exito_rest = True
+                    else:
+                        errores_totales.append({"field": ["variant"], "message": f"Error REST {res_rest.status_code}: {res_rest.text[:100]}"})
+                        break
+                except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+                    intentos += 1
+                    time.sleep(2)  # Pausa de 2 segundos antes de reintentar
+                    if intentos >= 3:
+                        errores_totales.append({"field": ["connection"], "message": "Error de conexión persistente con Shopify."})
 
     return errores_totales
 
@@ -365,6 +378,8 @@ if st.session_state.get("procesado"):
                     else:
                         errores_lista.append(f"Fila {idx+1}: No se encontró el producto en Shopify.")
                     
+                    # Pausa de 0.05 segundos para evitar ConnectionResetError
+                    time.sleep(0.05)
                     progreso.progress((idx + 1) / total)
 
                 status_text.empty()
