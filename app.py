@@ -273,7 +273,7 @@ if st.session_state.get("procesado"):
 
     st.divider()
     st.subheader(f"3. Datos Listos para Actualizar (Origen: {origen})")
-    st.dataframe(df_data.head(10), use_container_width=True)
+    st.dataframe(df_data.head(10), width="stretch"
 
     # -------------------------------------------------------------
     # DETECCIÓN DE CAMPOS PRESENTES Y SELECTOR INTERACTIVO
@@ -327,7 +327,7 @@ if st.session_state.get("procesado"):
                 for idx, row in df_data.iterrows():
                     status_text.text(f"Procesando registro {idx + 1} de {total}...")
                     
-                    product_id, handle_or_serpi = obtener_product_id_por_fila(row)
+                    product_id, handle_or_serpi = obtener_product_id(row)
                     
                     if product_id:
                         # Pasamos la lista de campos autorizados 'campos_permitidos'
