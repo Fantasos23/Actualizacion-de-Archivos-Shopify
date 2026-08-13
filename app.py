@@ -7,6 +7,7 @@ import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
 from subir_imagenes import buscar_producto_por_nombre_y_serpi, cargar_imagen_a_shopify
+from datetime import datetime, timedelta
 
 # -------------------------------------------------------------
 # 1. Configuración de Entorno y Conexión API
@@ -25,6 +26,25 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
+# -------------------------------------------------------------
+# FUNCIONES DE CONEXIÓN A SERPI API
+# -------------------------------------------------------------
+SERPI_BASE_URL = os.getenv("SERPI_BASE_URL", "https://apis.serpi.com.co").rstrip("/")
+SERPI_HEADERS = {
+    "secretkey": os.getenv("SERPI_SECRETKEY", "").strip(),
+    "Authorization": f"Bearer {os.getenv('SERPI_TOKEN', '').strip()}",
+    "Accept": "application/json"
+}
+
+def consultar_serpi_api(endpoint, params=None):
+    url = f"{SERPI_BASE_URL}{endpoint}"
+    try:
+        res = requests.get(url, headers=SERPI_HEADERS, params=params, timeout=45)
+        if res.status_code == 200:
+            return res.json().get("result", [])
+    except Exception as e:
+        st.error(f"Error consultando SERPI ({endpoint}): {e}")
+    return []
 # -------------------------------------------------------------
 # 2. Cargar Esquema Dinámico desde shopify_schema.json
 # -------------------------------------------------------------
@@ -389,7 +409,156 @@ if st.session_state.get("procesado"):
                     with st.expander("Ver detalle de errores"):
                         for err in errores_lista:
                             st.write(f"- {err}")
+# -------------------------------------------------------------
+# SECCIÓN EN STREAMLIT: SINCRONIZACIÓN AUTOMÁTICA SERPI
+# -------------------------------------------------------------
+st.divider()
+st.header("⚡ Sincronización Directa API SERPI ➡️ Shopify")
+st.write("Sincroniza stock, precios o detecta nuevos libros creados en SERPI en tiempo real.")
 
+tab_stock, tab_precios, tab_nuevos = st.tabs([
+    "📦 Actualizar Inventario (24h)", 
+    "💰 Actualizar Precios", 
+    "✨ Detectar y Crear Libros Nuevos"
+])
+
+# -------------------------------------------------------------
+# 1. TAB: SINCRONIZAR INVENTARIO (ÚLTIMAS 24 Horas)
+# -------------------------------------------------------------
+with tab_stock:
+    st.subheader("🔄 Sincronizar Existencias de Inventario")
+    st.caption("Consulta los saldos actuales en SERPI y actualiza la cantidad en Shopify.")
+    
+    if st.button("🚀 Consultar y Actualizar Stock (24h)"):
+        hoy_str = datetime.now().strftime("%Y-%m-%d")
+        with st.spinner("Consultando saldos de inventario en SERPI..."):
+            saldos = consultar_serpi_api("/api/v1/SaldoInventarioSinCosto", params={"fechaCorte": hoy_str, "limite": 500, "pagina": 1})
+            
+            if not saldos:
+                st.warning("No se encontraron registros de inventario en SERPI.")
+            else:
+                st.success(f"Se obtuvieron {len(saldos)} registros de inventario desde SERPI.")
+                st.dataframe(pd.DataFrame(saldos).head(10))
+                
+                # Procesar actualización hacia Shopify
+                progreso = st.progress(0)
+                status = st.empty()
+                exitos, errores = 0, 0
+                
+                for idx, item in enumerate(saldos):
+                    codigo_serpi = item.get("codigo")
+                    nuevo_saldo = item.get("saldo", 0)
+                    status.text(f"Actualizando producto {idx+1}/{len(saldos)}: SERPI {codigo_serpi} -> Stock: {nuevo_saldo}")
+                    
+                    # Buscar ID en Shopify por custom.serpi o Handle/SKU
+                    product_id, _ = obtener_product_id({"serpi": codigo_serpi})
+                    if product_id:
+                        # Crear fila virtual compatible con el esquema de actualización
+                        fila_virtual = pd.Series({
+                            "serpi": codigo_serpi,
+                            "inventory_quantity": nuevo_saldo
+                        })
+                        errs = actualizar_producto_con_esquema(product_id, fila_virtual, campos_permitidos=["inventory_quantity"])
+                        if not errs:
+                            exitos += 1
+                        else:
+                            errores += 1
+                    else:
+                        errores += 1
+                        
+                    time.sleep(0.05)
+                    progreso.progress((idx + 1) / len(saldos))
+                
+                status.empty()
+                st.success(f"🎉 Proceso finalizado. Exitosos en Shopify: {exitos} | No encontrados/Errores: {errores}")
+
+# -------------------------------------------------------------
+# 2. TAB: SINCRONIZAR PRECIOS
+# -------------------------------------------------------------
+with tab_precios:
+    st.subheader("💰 Sincronizar Lista de Precios")
+    st.caption("Obtiene los precios actualizados de la lista predeterminada y actualiza `price` en Shopify.")
+    
+    if st.button("🚀 Actualizar Precios desde SERPI"):
+        with st.spinner("Consultando lista de precios en SERPI..."):
+            precios = consultar_serpi_api("/api/v1/ListaPrecioDetalle", params={"limite": 500, "pagina": 1})
+            
+            if not precios:
+                st.warning("No se encontraron datos en la lista de precios de SERPI.")
+            else:
+                st.success(f"Se obtuvieron {len(precios)} precios desde SERPI.")
+                st.dataframe(pd.DataFrame(precios).head(10))
+                
+                progreso = st.progress(0)
+                status = st.empty()
+                exitos, errores = 0, 0
+                
+                for idx, item in enumerate(precios):
+                    # id_articulo o descripcion_articulo / codigo
+                    codigo_articulo = str(item.get("id_articulo", ""))
+                    nuevo_precio = item.get("precio", 0)
+                    
+                    status.text(f"Actualizando precio {idx+1}/{len(precios)}: Articulo {codigo_articulo} -> ${nuevo_precio}")
+                    
+                    product_id, _ = obtener_product_id({"serpi": codigo_articulo})
+                    if product_id:
+                        fila_virtual = pd.Series({
+                            "serpi": codigo_articulo,
+                            "price": nuevo_precio
+                        })
+                        errs = actualizar_producto_con_esquema(product_id, fila_virtual, campos_permitidos=["price"])
+                        if not errs:
+                            exitos += 1
+                        else:
+                            errores += 1
+                    else:
+                        errores += 1
+                        
+                    time.sleep(0.05)
+                    progreso.progress((idx + 1) / len(precios))
+                
+                status.empty()
+                st.success(f"🎉 Precios actualizados. Exitosos: {exitos} | Errores: {errores}")
+
+# -------------------------------------------------------------
+# 3. TAB: DETECTAR Y CREAR NUEVOS LIBROS / ARTÍCULOS
+# -------------------------------------------------------------
+with tab_nuevos:
+    st.subheader("✨ Detectar Cambios y Crear Productos en Rango de Tiempo")
+    
+    rango_horas = st.radio("Selecciona el rango de tiempo de consulta en SERPI:", [24, 48, 72], horizontal=True)
+    
+    if st.button(f"🔍 Consultar Artículos Creados/Modificados ({rango_horas}h)"):
+        # Calcular fecha inicial según las horas seleccionadas (Formato dd-MM-yyyy según la API)
+        fecha_ini = (datetime.now() - timedelta(hours=rango_horas)).strftime("%d-%m-%Y")
+        
+        with st.spinner(f"Buscando libros modificados desde {fecha_ini}..."):
+            articulos = consultar_serpi_api("/api/v1/Articulo", params={"fechamodificaini": fecha_ini, "limite": 100, "pagina": 1})
+            
+            if not articulos:
+                st.info(f"No hay artículos creados o modificados en las últimas {rango_horas} horas.")
+            else:
+                st.success(f"Se encontraron **{len(articulos)}** artículos modificados/creados en las últimas {rango_horas} horas.")
+                
+                # Aplanar camposPersonalizados (autor, editorial, paginas, etc.) para visualización
+                datos_tabla = []
+                for art in articulos:
+                    cp = art.get("camposPersonalizados", {}) or {}
+                    datos_tabla.append({
+                        "Código SERPI": art.get("codigo"),
+                        "Título": art.get("descripcion"),
+                        "Autor": cp.get("autor", ""),
+                        "Editorial": cp.get("editorial", ""),
+                        "Páginas": cp.get("paginas", ""),
+                        "Activo": art.get("activo")
+                    })
+                
+                st.dataframe(pd.DataFrame(datos_tabla), width="stretch")
+                
+                if st.button("🚀 Crear Libros Faltantes en Shopify"):
+                    st.info("Iniciando creación en Shopify...")
+                    # Aquí ejecutaremos la mutación GraphQL productCreate con los datos del libro
+                    
 # -------------------------------------------------------------
 # SECCIÓN: Subida Asistida de Portadas por Nombre y Código SERPI
 # -------------------------------------------------------------

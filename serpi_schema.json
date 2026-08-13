@@ -1,0 +1,292 @@
+{
+  "api_articulos": {
+    "endpoint": "/api/v1/Articulo",
+    "metodo": "GET",
+    "campo_clave": "codigo",
+    "campos": {
+      "id": {
+        "tipo": "int",
+        "ejemplo": 1,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "codigo": {
+        "tipo": "str",
+        "ejemplo": "1",
+        "mapeo_shopify": "SKU / metafield: custom.serpi"
+      },
+      "referencia": {
+        "tipo": "str",
+        "ejemplo": "MAN EQUIP",
+        "mapeo_shopify": "Sin mapear"
+      },
+      "barras": {
+        "tipo": "desconocido",
+        "ejemplo": null,
+        "mapeo_shopify": "barcode"
+      },
+      "descripcion": {
+        "tipo": "str",
+        "ejemplo": "MANTENIMIENTO REDES Y EQUIPOS",
+        "mapeo_shopify": "title"
+      },
+      "idgrupocontable": {
+        "tipo": "int",
+        "ejemplo": 2,
+        "mapeo_shopify": "productType"
+      },
+      "descripcionalterna": {
+        "tipo": "desconocido",
+        "ejemplo": null,
+        "mapeo_shopify": "descriptionHtml"
+      },
+      "idlinea": {
+        "tipo": "int",
+        "ejemplo": 1,
+        "mapeo_shopify": "vendor"
+      },
+      "idcategoria": {
+        "tipo": "int",
+        "ejemplo": 1,
+        "mapeo_shopify": "tags"
+      },
+      "idpresentacion": {
+        "tipo": "int",
+        "ejemplo": 2,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "idmarca": {
+        "tipo": "int",
+        "ejemplo": 1,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "idunidadmedida": {
+        "tipo": "int",
+        "ejemplo": 3,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "peso": {
+        "tipo": "desconocido",
+        "ejemplo": null,
+        "mapeo_shopify": "weight"
+      },
+      "costo": {
+        "tipo": "desconocido",
+        "ejemplo": null,
+        "mapeo_shopify": "cost_per_item"
+      },
+      "costou": {
+        "tipo": "desconocido",
+        "ejemplo": null,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "activo": {
+        "tipo": "bool",
+        "ejemplo": true,
+        "mapeo_shopify": "status"
+      },
+      "posicionarancel": {
+        "tipo": "desconocido",
+        "ejemplo": null,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "porcentajeArancel": {
+        "tipo": "desconocido",
+        "ejemplo": null,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "diasMaximo": {
+        "tipo": "int",
+        "ejemplo": 0,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "diasminimo": {
+        "tipo": "int",
+        "ejemplo": 0,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "diasoptimo": {
+        "tipo": "int",
+        "ejemplo": 0,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "dias_reposicion": {
+        "tipo": "int",
+        "ejemplo": 0,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "tipoPlaneacion": {
+        "tipo": "int",
+        "ejemplo": 0,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "multiploCompra": {
+        "tipo": "float",
+        "ejemplo": 1.0,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "pedidoMinimo": {
+        "tipo": "float",
+        "ejemplo": 1.0,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "stockMinimoUnidades": {
+        "tipo": "desconocido",
+        "ejemplo": null,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "stockOptimoUnidades": {
+        "tipo": "desconocido",
+        "ejemplo": null,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "aplicaPromocion": {
+        "tipo": "bool",
+        "ejemplo": false,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "aplicaKit": {
+        "tipo": "bool",
+        "ejemplo": false,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "exportable": {
+        "tipo": "bool",
+        "ejemplo": true,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "volumen": {
+        "tipo": "desconocido",
+        "ejemplo": null,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "ubicacion": {
+        "tipo": "desconocido",
+        "ejemplo": null,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "ubicacionAlfanumerica": {
+        "tipo": "desconocido",
+        "ejemplo": null,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "palabrasClave": {
+        "tipo": "desconocido",
+        "ejemplo": null,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "camposPersonalizados": {
+        "tipo": "dict",
+        "ejemplo": {
+          "autor": "",
+          "editorial": "",
+          "estado": "",
+          "categoria": "",
+          "paginas": "",
+          "descripcion": "",
+          "etiquetas": "",
+          "presentacion": ""
+        },
+        "mapeo_shopify": "Sin mapear"
+      },
+      "aplicaAiu": {
+        "tipo": "bool",
+        "ejemplo": false,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "porcentajeAiu": {
+        "tipo": "desconocido",
+        "ejemplo": null,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "idgrupocontableAiu": {
+        "tipo": "desconocido",
+        "ejemplo": null,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "importado": {
+        "tipo": "bool",
+        "ejemplo": false,
+        "mapeo_shopify": "Sin mapear"
+      }
+    }
+  },
+  "api_inventario": {
+    "endpoint": "/api/v1/SaldoInventarioSinCosto",
+    "metodo": "GET",
+    "campo_clave": "codigo",
+    "campos": {
+      "idArticulo": {
+        "tipo": "int",
+        "ejemplo": 756,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "descripcion": {
+        "tipo": "str",
+        "ejemplo": "\tTemas Fundamentales Del Derecho Penal tomo III",
+        "mapeo_shopify": "title"
+      },
+      "codigo": {
+        "tipo": "str",
+        "ejemplo": "1000000369",
+        "mapeo_shopify": "SKU / metafield: custom.serpi"
+      },
+      "idBodega": {
+        "tipo": "int",
+        "ejemplo": 13,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "codigoBodega": {
+        "tipo": "str",
+        "ejemplo": "1",
+        "mapeo_shopify": "location_id"
+      },
+      "saldo": {
+        "tipo": "float",
+        "ejemplo": 0.0,
+        "mapeo_shopify": "inventory_quantity"
+      }
+    }
+  },
+  "api_precios": {
+    "endpoint": "/api/v1/ListaPrecioDetalle",
+    "metodo": "GET",
+    "campo_clave": "codigo",
+    "campos": {
+      "id_listaprecio": {
+        "tipo": "int",
+        "ejemplo": 1,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "descripcion_id_listaprecio": {
+        "tipo": "str",
+        "ejemplo": "LISTA PP",
+        "mapeo_shopify": "Sin mapear"
+      },
+      "id_articulo": {
+        "tipo": "int",
+        "ejemplo": 9,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "descripcion_articulo": {
+        "tipo": "str",
+        "ejemplo": "Pre-Suasión",
+        "mapeo_shopify": "Sin mapear"
+      },
+      "precio": {
+        "tipo": "float",
+        "ejemplo": 69000.0,
+        "mapeo_shopify": "price"
+      },
+      "descuento": {
+        "tipo": "float",
+        "ejemplo": 0.0,
+        "mapeo_shopify": "Sin mapear"
+      },
+      "observaciones": {
+        "tipo": "str",
+        "ejemplo": "",
+        "mapeo_shopify": "Sin mapear"
+      }
+    }
+  }
+}
