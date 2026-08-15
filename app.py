@@ -198,22 +198,29 @@ def obtener_product_id(row):
     return None, None
 
 def obtener_fecha_inicio_rango(horas):
+    """
+    Retorna fechas en formato estándar ISO y con hora para filtros estrictos de API.
+    """
     fecha_dt = datetime.now() - timedelta(hours=horas)
-    return fecha_dt.strftime("%Y-%m-%d"), fecha_dt.strftime("%d-%m-%Y")
+    # Formato estándar YYYY-MM-DD
+    fecha_iso = fecha_dt.strftime("%Y-%m-%d")
+    # Formato con hora por si el endpoint de SERPI filtra por timestamp
+    fecha_iso_hora = fecha_dt.strftime("%Y-%m-%dT%H:%M:%S")
+    return fecha_iso, fecha_iso_hora
 
 def consultar_inventario_serpi(horas=24):
-    fecha_iso, _ = obtener_fecha_inicio_rango(horas)
+    fecha_iso, fecha_iso_hora = obtener_fecha_inicio_rango(horas)
     hoy_iso = datetime.now().strftime("%Y-%m-%d")
     params = {
         "fechaCorte": hoy_iso,
-        "fechamodificaini": fecha_iso,
+        "fechamodificaini": fecha_iso, # Probar formato YYYY-MM-DD
         "limite": 500,
         "pagina": 1
     }
     return consultar_serpi_api("/api/v1/SaldoInventarioSinCosto", params=params)
 
 def consultar_precios_serpi(horas=24):
-    fecha_iso, _ = obtener_fecha_inicio_rango(horas)
+    fecha_iso, fecha_iso_hora = obtener_fecha_inicio_rango(horas)
     params = {
         "fechamodificaini": fecha_iso,
         "limite": 500,
@@ -318,6 +325,63 @@ def crear_producto_en_shopify(item_serpi):
 
     except Exception as e:
         return None, [{"field": ["create_exception"], "message": str(e)}]
+SNAPSHOT_FILE = base_dir / "control_snapshot.json"
+
+def cargar_snapshot_control():
+    """Carga el snapshot histórico de inventario y precios."""
+    if SNAPSHOT_FILE.exists():
+        try:
+            with open(SNAPSHOT_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def guardar_snapshot_control(data):
+    """Guarda los datos actualizados en el archivo de control."""
+    try:
+        with open(SNAPSHOT_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        st.error(f"Error guardando archivo de control: {e}")
+
+def actualizar_sku_en_snapshot(codigo, stock=None, precio=None):
+    """Actualiza un SKU individual en el snapshot tras ser sincronizado."""
+    snapshot = cargar_snapshot_control()
+    codigo_str = str(codigo).strip()
+    
+    if codigo_str not in snapshot:
+        snapshot[codigo_str] = {}
+        
+    if stock is not None:
+        snapshot[codigo_str]["stock"] = int(float(stock))
+    if precio is not None:
+        snapshot[codigo_str]["precio"] = float(precio)
+    snapshot[codigo_str]["ultima_actualizacion"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    guardar_snapshot_control(snapshot)
+
+def consultar_articulos_modificados(horas=24):
+    """Consulta articulos modificados usando el rango estricto fechamodificaini y fechamodificafin."""
+    ahora = datetime.now()
+    inicio = ahora - timedelta(hours=horas)
+    
+    params = {
+        "fechamodificaini": inicio.strftime("%Y-%m-%d"),
+        "fechamodificafin": ahora.strftime("%Y-%m-%d"),
+        "limite": 500,
+        "pagina": 1
+    }
+    return consultar_serpi_api("/api/v1/Articulo", params=params)
+
+def consultar_inventario_completo():
+    """Trae el inventario actual a la fecha de corte."""
+    hoy = datetime.now().strftime("%Y-%m-%d")
+    return consultar_serpi_api("/api/v1/SaldoInventarioSinCosto", params={"fechaCorte": hoy, "limite": 1000, "pagina": 1})
+
+def consultar_precios_completos():
+    """Trae la lista de precios."""
+    return consultar_serpi_api("/api/v1/ListaPrecios", params={"limite": 1000, "pagina": 1})
 
 # -------------------------------------------------------------
 # GESTIÓN DE CACHÉ / MEMORIA DE PRODUCTOS PROCESADOS
@@ -530,7 +594,6 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
     nuevo_stock = item_consolidado.get("saldo")
     nuevo_precio = item_consolidado.get("precio")
     
-    # Encabezado con tarjeta estilizada
     with st.container(border=True):
         st.subheader(f"📖 {titulo_serpi}")
         c_head1, c_head2, c_head3 = st.columns(3)
@@ -549,7 +612,7 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
         product_id, match_origen = obtener_product_id(fila_virtual)
         
         # ---------------------------------------------------------
-        # CASO A: EL PRODUCTO NO EXISTE EN SHOPIFY
+        # CASO A: EL PRODUCTO NO EXISTE EN SHOPIFY (CREAR)
         # ---------------------------------------------------------
         if not product_id:
             st.error("⚠️ Este producto no se encuentra registrado en el catálogo de Shopify.")
@@ -574,14 +637,17 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
                 with st.spinner("Creando producto y configurando inventario..."):
                     new_id, errs = crear_producto_en_shopify(item_consolidado)
                     if new_id:
+                        # 👈 AQUÍ SE ACTUALIZA EL SNAPSHOT Y LA MEMORIA AL CREAR
                         registrar_producto_procesado(codigo_serpi)
+                        actualizar_sku_en_snapshot(codigo_serpi, stock=nuevo_stock, precio=nuevo_precio)
+                        
                         st.balloons()
                         st.success(f"🎉 ¡Producto creado exitosamente! (ID: `{new_id}`)")
                     else:
                         st.error(f"Error al crear: {errs}")
 
         # ---------------------------------------------------------
-        # CASO B: EL PRODUCTO YA EXISTE (COMPARADOR DE DIFERENCIAS)
+        # CASO B: EL PRODUCTO EXISTE (ACTUALIZAR)
         # ---------------------------------------------------------
         else:
             query_detalles = """
@@ -620,7 +686,6 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
             st.success(f"🔗 Vinculado a producto en Shopify vía: **{match_origen}**")
             
             col_comp1, col_comp2 = st.columns(2)
-            
             with col_comp1:
                 with st.container(border=True):
                     st.markdown("##### 📦 Existencias y Precios")
@@ -671,11 +736,66 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
                     if err_pr: errs_totales.extend(err_pr)
                     
                     if not errs_totales:
+                        # 👈 AQUÍ SE ACTUALIZA EL SNAPSHOT Y LA MEMORIA AL ACTUALIZAR
                         registrar_producto_procesado(codigo_serpi)
+                        actualizar_sku_en_snapshot(codigo_serpi, stock=nuevo_stock, precio=nuevo_precio)
+                        
                         st.balloons()
                         st.success(f"🎉 ¡Producto '{prod_sp.get('title')}' actualizado con éxito!")
                     else:
                         st.error(f"Errores al sincronizar: {errs_totales}")
+# 4. Sincronización Masiva en Lote
+        st.write("")
+        with st.container(border=True):
+            col_mas_info, col_mas_btn = st.columns([3, 2])
+            with col_mas_info:
+                st.markdown("##### ⚡ Sincronización en Lote")
+                st.caption(f"Se actualizarán todos los **{pendientes_count}** productos pendientes en Shopify.")
+            with col_mas_btn:
+                st.write("")
+                if st.button("🚀 Aplicar Todo el Lote en Shopify", type="primary", use_container_width=True, key="btn_masivo_global"):
+                    progreso = st.progress(0)
+                    status = st.empty()
+                    pendientes = [p for p in lista_cache if not esta_procesado(p.get("codigo"))]
+                    total_p = len(pendientes)
+                    exitos, errores = 0, 0
+                    
+                    if total_p == 0:
+                        st.info("No hay productos pendientes por sincronizar en la lista.")
+                    else:
+                        for idx, item in enumerate(pendientes):
+                            cod_serpi = item.get("codigo")
+                            tit_serpi = item.get("descripcion", "")
+                            cp_serpi = item.get("camposPersonalizados", {}) or {}
+                            stk_serpi = item.get("saldo")
+                            prc_serpi = item.get("precio")
+                            
+                            status.text(f"[{idx+1}/{total_p}] Sincronizando: {tit_serpi[:30]}...")
+                            fila_v = pd.Series({
+                                "serpi": cod_serpi, 
+                                "descripcion": tit_serpi, 
+                                "price": prc_serpi, 
+                                **cp_serpi
+                            })
+                            
+                            p_id, _ = obtener_product_id(fila_v)
+                            if p_id:
+                                if stk_serpi is not None:
+                                    actualizar_stock_shopify(p_id, stk_serpi)
+                                actualizar_producto_con_esquema(p_id, fila_v)
+                                
+                                registrar_producto_procesado(cod_serpi)
+                                actualizar_sku_en_snapshot(cod_serpi, stock=stk_serpi, precio=prc_serpi)
+                                exitos += 1
+                            else:
+                                errores += 1
+                                
+                            time.sleep(0.05)
+                            progreso.progress((idx + 1) / total_p)
+                            
+                        status.empty()
+                        st.success(f"🎉 Lote finalizado. Sincronizados: {exitos} | No encontrados: {errores}")
+                        st.rerun()
 
 
 # -------------------------------------------------------------
@@ -709,7 +829,85 @@ tab_unificado, tab_excel, tab_portadas = st.tabs([
     "📄 Carga Manual (Excel/CSV)",
     "🖼️ Galería de Portadas"
 ])
-
+# -------------------------------------------------------------
+# HERRAMIENTA DE DIAGNÓSTICO RAW API SERPI
+# -------------------------------------------------------------
+with st.sidebar.expander("🛠️ Diagnóstico RAW de Endpoints SERPI", expanded=False):
+    st.caption("Inspecciona la estructura exacta de datos y fechas devueltas por SERPI.")
+    
+    endpoint_test = st.selectbox(
+        "Seleccionar Endpoint:",
+        [
+            "/api/v1/Articulo", 
+            "/api/v1/SaldoInventarioSinCosto", 
+            "/api/v1/ListaPrecioDetalle"
+        ],
+        key="select_endpoint_debug"
+    )
+    
+    # Campo para probar diferentes nombres de parámetro de fecha
+    param_fecha_nombre = st.selectbox(
+        "Parámetro de Fecha a Probar:",
+        [
+            "fechamodificaini", 
+            "fechaModificaIni", 
+            "fechaDesde", 
+            "fecha_desde", 
+            "fechamodifica", 
+            "fechaInicio"
+        ],
+        key="param_fecha_debug"
+    )
+    
+    formato_fecha_test = st.radio(
+        "Formato de Fecha:",
+        ["YYYY-MM-DD", "DD-MM-YYYY", "ISO Timestamp (YYYY-MM-DDTHH:MM:SS)"],
+        key="formato_fecha_debug"
+    )
+    
+    if st.button("🧪 Ejecutar Petición de Prueba", key="btn_test_raw_serpi"):
+        now_dt = datetime.now()
+        yesterday_dt = now_dt - timedelta(hours=24)
+        
+        if formato_fecha_test == "YYYY-MM-DD":
+            f_val = yesterday_dt.strftime("%Y-%m-%d")
+        elif formato_fecha_test == "DD-MM-YYYY":
+            f_val = yesterday_dt.strftime("%d-%m-%Y")
+        else:
+            f_val = yesterday_dt.strftime("%Y-%m-%dT%H:%M:%S")
+            
+        test_params = {
+            param_fecha_nombre: f_val,
+            "limite": 2,
+            "pagina": 1
+        }
+        
+        url_debug = f"{SERPI_BASE_URL}{endpoint_test}"
+        st.write(f"**URL:** `{url_debug}`")
+        st.write(f"**Parámetros enviados:**")
+        st.json(test_params)
+        
+        try:
+            r = requests.get(url_debug, headers=SERPI_HEADERS, params=test_params, timeout=20)
+            st.write(f"**HTTP Status:** `{r.status_code}`")
+            
+            raw_json = r.json()
+            st.markdown("#### 📦 Respuesta Raw:")
+            st.json(raw_json)
+            
+            # Buscar automáticamente claves relacionadas con fechas en los registros
+            items = raw_json.get("result", [])
+            if items and isinstance(items, list) and len(items) > 0:
+                primer_item = items[0]
+                claves_fecha = {k: v for k, v in primer_item.items() if any(sub in k.lower() for sub in ["fecha", "date", "time", "modific", "crea"])}
+                
+                if claves_fecha:
+                    st.success("🎯 Claves de fecha detectadas en el objeto:")
+                    st.json(claves_fecha)
+                else:
+                    st.warning("⚠️ No se encontraron campos de fecha explícitos en el primer nivel del objeto.")
+        except Exception as err:
+            st.error(f"Error en la petición: {err}")
 # =============================================================
 # PESTAÑA 1: SINCRONIZACIÓN AUTOMÁTICA
 # =============================================================
@@ -743,58 +941,105 @@ with tab_unificado:
 
     # Ejecución de la consulta
     if btn_master_sync:
-        fecha_iso, fecha_fmt = obtener_fecha_inicio_rango(rango_unificado)
-        with st.spinner(f"Consultando movimientos en SERPI desde {fecha_fmt}..."):
-            saldos_raw = consultar_inventario_serpi(horas=rango_unificado)
-            precios_raw = consultar_precios_serpi(horas=rango_unificado)
-            articulos_raw = consultar_serpi_api("/api/v1/Articulo", params={"fechamodificaini": fecha_fmt, "limite": 200, "pagina": 1})
+        snapshot_previo = cargar_snapshot_control()
+        primer_inicio = len(snapshot_previo) == 0
+        
+        with st.spinner("Auditando cambios reales mediante Archivo de Control..."):
+            # 1. Artículos con ficha modificada en el rango de tiempo
+            articulos_raw = consultar_articulos_modificados(horas=rango_unificado)
             
-            mapa_consolidado = {}
+            # 2. Inventario y Precios globales
+            saldos_raw = consultar_inventario_completo()
+            precios_raw = consultar_precios_completos()
+            
+            mapa_novedades = {}
+            nuevo_snapshot = dict(snapshot_previo)
+            
+            # --- FASE 1: Procesar Fichas Modificadas ---
             for art in articulos_raw:
-                cod = art.get("codigo")
+                cod = str(art.get("codigo", "")).strip()
                 if cod:
-                    mapa_consolidado[cod] = {
+                    mapa_novedades[cod] = {
                         "codigo": cod,
                         "descripcion": art.get("descripcion", ""),
                         "camposPersonalizados": art.get("camposPersonalizados", {}) or {},
                         "saldo": None,
-                        "precio": None
+                        "precio": None,
+                        "motivo": "📝 Ficha/Datos Modificados"
                     }
-                    
+
+            # --- FASE 2: Comparar Inventario vs Snapshot ---
             for item in saldos_raw:
-                cod = item.get("codigo")
-                if cod:
-                    if cod not in mapa_consolidado:
-                        mapa_consolidado[cod] = {
+                cod = str(item.get("codigo", "")).strip()
+                if not cod:
+                    continue
+                    
+                stock_actual = int(float(item.get("saldo", 0) or 0))
+                stock_anterior = snapshot_previo.get(cod, {}).get("stock")
+                
+                # Actualizar el snapshot en memoria
+                if cod not in nuevo_snapshot:
+                    nuevo_snapshot[cod] = {}
+                nuevo_snapshot[cod]["stock"] = stock_actual
+                
+                # Si es la primera vez que se crea el snapshot o el stock cambió
+                if not primer_inicio and stock_anterior is not None and stock_actual != stock_anterior:
+                    if cod not in mapa_novedades:
+                        mapa_novedades[cod] = {
                             "codigo": cod,
                             "descripcion": item.get("descripcion", ""),
                             "camposPersonalizados": {},
-                            "saldo": item.get("saldo"),
-                            "precio": None
+                            "saldo": stock_actual,
+                            "precio": None,
+                            "motivo": f"📦 Stock cambió ({stock_anterior} ➔ {stock_actual})"
                         }
                     else:
-                        mapa_consolidado[cod]["saldo"] = item.get("saldo")
+                        mapa_novedades[cod]["saldo"] = stock_actual
+                        mapa_novedades[cod]["motivo"] += f" | 📦 Stock ({stock_anterior} ➔ {stock_actual})"
+                elif cod in mapa_novedades:
+                    mapa_novedades[cod]["saldo"] = stock_actual
 
+            # --- FASE 3: Comparar Precios vs Snapshot ---
             for item in precios_raw:
-                cod = str(item.get("codigo") or item.get("id_articulo", ""))
-                if cod:
-                    if cod not in mapa_consolidado:
-                        mapa_consolidado[cod] = {
+                cod = str(item.get("codigo") or item.get("id_articulo", "")).strip()
+                if not cod:
+                    continue
+                    
+                precio_actual = float(item.get("precio", 0) or 0)
+                precio_anterior = snapshot_previo.get(cod, {}).get("precio")
+                
+                if cod not in nuevo_snapshot:
+                    nuevo_snapshot[cod] = {}
+                nuevo_snapshot[cod]["precio"] = precio_actual
+                
+                if not primer_inicio and precio_anterior is not None and precio_actual != precio_anterior:
+                    if cod not in mapa_novedades:
+                        mapa_novedades[cod] = {
                             "codigo": cod,
                             "descripcion": item.get("descripcion_articulo") or item.get("descripcion", ""),
                             "camposPersonalizados": {},
                             "saldo": None,
-                            "precio": item.get("precio")
+                            "precio": precio_actual,
+                            "motivo": f"💰 Precio cambió (${precio_anterior:,.0f} ➔ ${precio_actual:,.0f})"
                         }
                     else:
-                        mapa_consolidado[cod]["precio"] = item.get("precio")
+                        mapa_novedades[cod]["precio"] = precio_actual
+                        mapa_novedades[cod]["motivo"] += f" | 💰 Precio (${precio_anterior:,.0f} ➔ ${precio_actual:,.0f})"
+                elif cod in mapa_novedades:
+                    mapa_novedades[cod]["precio"] = precio_actual
 
-            lista_final = list(mapa_consolidado.values())
+            # Si era la primera ejecución, guardamos la base inicial
+            if primer_inicio:
+                guardar_snapshot_control(nuevo_snapshot)
+                st.info(f"📌 Se ha generado el Archivo de Control Inicial con **{len(nuevo_snapshot)}** productos. A partir de este momento solo se listarán variaciones reales.")
+            
+            lista_final = list(mapa_novedades.values())
             if lista_final:
                 st.session_state["cache_unificado"] = lista_final
+                st.success(f"🎯 Se detectaron **{len(lista_final)}** productos con cambios reales comprobados.")
             else:
                 st.session_state.pop("cache_unificado", None)
-                st.warning("No se detectaron movimientos en el rango horario seleccionado.")
+                st.info("✅ Todo el inventario y precios se encuentran al día. Sin novedades en SERPI.")
 
     # Panel de Resultados y Métricas
     if "cache_unificado" in st.session_state and st.session_state["cache_unificado"]:
@@ -875,7 +1120,7 @@ with tab_unificado:
                 }
             )
 
-        # 4. Sincronización Masiva
+       # 4. Sincronización Masiva en Lote (ÚNICA INSTANCIA)
         st.write("")
         with st.container(border=True):
             col_mas_info, col_mas_btn = st.columns([3, 2])
@@ -891,32 +1136,42 @@ with tab_unificado:
                     total_p = len(pendientes)
                     exitos, errores = 0, 0
                     
-                    for idx, item in enumerate(pendientes):
-                        cod_serpi = item.get("codigo")
-                        tit_serpi = item.get("descripcion", "")
-                        cp_serpi = item.get("camposPersonalizados", {}) or {}
-                        stk_serpi = item.get("saldo")
-                        prc_serpi = item.get("precio")
-                        
-                        status.text(f"[{idx+1}/{total_p}] Sincronizando: {tit_serpi[:30]}...")
-                        fila_v = pd.Series({"serpi": cod_serpi, "descripcion": tit_serpi, "price": prc_serpi, **cp_serpi})
-                        
-                        p_id, _ = obtener_product_id(fila_v)
-                        if p_id:
-                            if stk_serpi is not None:
-                                actualizar_stock_shopify(p_id, stk_serpi)
-                            actualizar_producto_con_esquema(p_id, fila_v)
-                            registrar_producto_procesado(cod_serpi)
-                            exitos += 1
-                        else:
-                            errores += 1
+                    if total_p == 0:
+                        st.info("No hay productos pendientes por sincronizar en la lista.")
+                    else:
+                        for idx, item in enumerate(pendientes):
+                            cod_serpi = item.get("codigo")
+                            tit_serpi = item.get("descripcion", "")
+                            cp_serpi = item.get("camposPersonalizados", {}) or {}
+                            stk_serpi = item.get("saldo")
+                            prc_serpi = item.get("precio")
                             
-                        time.sleep(0.05)
-                        progreso.progress((idx + 1) / total_p)
-                        
-                    status.empty()
-                    st.success(f"🎉 Lote finalizado. Sincronizados: {exitos} | No encontrados: {errores}")
-                    st.rerun()
+                            status.text(f"[{idx+1}/{total_p}] Sincronizando: {tit_serpi[:30]}...")
+                            fila_v = pd.Series({
+                                "serpi": cod_serpi, 
+                                "descripcion": tit_serpi, 
+                                "price": prc_serpi, 
+                                **cp_serpi
+                            })
+                            
+                            p_id, _ = obtener_product_id(fila_v)
+                            if p_id:
+                                if stk_serpi is not None:
+                                    actualizar_stock_shopify(p_id, stk_serpi)
+                                actualizar_producto_con_esquema(p_id, fila_v)
+                                
+                                registrar_producto_procesado(cod_serpi)
+                                actualizar_sku_en_snapshot(cod_serpi, stock=stk_serpi, precio=prc_serpi)
+                                exitos += 1
+                            else:
+                                errores += 1
+                                
+                            time.sleep(0.05)
+                            progreso.progress((idx + 1) / total_p)
+                            
+                        status.empty()
+                        st.success(f"🎉 Lote finalizado. Sincronizados: {exitos} | No encontrados: {errores}")
+                        st.rerun()
 
 # =============================================================
 # PESTAÑA 2: CARGA MANUAL VÍA EXCEL/CSV
