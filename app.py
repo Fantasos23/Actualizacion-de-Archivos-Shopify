@@ -94,6 +94,61 @@ def consultar_inventario_completo():
 def consultar_precios_completos():
     return consultar_todos_los_registros_serpi("/api/v1/ListaPrecios")
 
+def obtener_precio_puntual_serpi(codigo_sku):
+    """Consulta el precio de un SKU específico directamente en SERPI o desde el Snapshot."""
+    try:
+        codigo_str = str(codigo_sku).strip()
+        snapshot = cargar_snapshot_control()
+        if codigo_str in snapshot and snapshot[codigo_str].get("precio") is not None and float(snapshot[codigo_str]["precio"]) > 0:
+            return float(snapshot[codigo_str]["precio"])
+
+        res = consultar_serpi_api("/api/v1/ListaPrecioDetalle", params={"codigo": codigo_str, "limite": 10})
+        if res and isinstance(res, list):
+            precios_validos = []
+            for r in res:
+                c = str(r.get("codigo") or r.get("id_articulo", "")).strip()
+                if c == codigo_str or not c:
+                    p = float(r.get("precio", 0) or 0)
+                    if p > 0:
+                        precios_validos.append((r.get("id_listaprecio"), p))
+            if precios_validos:
+                for id_lp, p in precios_validos:
+                    if id_lp == 1:
+                        return p
+                return max(p for _, p in precios_validos)
+            if len(res) > 0:
+                p_alt = [float(r.get("precio", 0) or 0) for r in res if float(r.get("precio", 0) or 0) > 0]
+                if p_alt:
+                    return max(p_alt)
+    except Exception:
+        pass
+    return 0.0
+
+def obtener_stock_puntual_serpi(codigo_sku):
+    """Consulta las existencias de un SKU específico sumando todas las bodegas en SERPI."""
+    try:
+        codigo_str = str(codigo_sku).strip()
+        snapshot = cargar_snapshot_control()
+        if codigo_str in snapshot and snapshot[codigo_str].get("stock") is not None:
+            return int(float(snapshot[codigo_str]["stock"]))
+
+        hoy = datetime.now().strftime("%Y-%m-%d")
+        res = consultar_serpi_api("/api/v1/SaldoInventarioSinCosto", params={"fechaCorte": hoy, "codigo": codigo_str, "limite": 20})
+        if res and isinstance(res, list):
+            total_stock = 0.0
+            found = False
+            for r in res:
+                if str(r.get("codigo", "")).strip() == codigo_str:
+                    total_stock += float(r.get("saldo", 0) or 0)
+                    found = True
+            if found:
+                return int(total_stock)
+            if len(res) > 0:
+                return int(sum(float(r.get("saldo", 0) or 0) for r in res))
+    except Exception:
+        pass
+    return 0
+
 # -------------------------------------------------------------
 # 3. Snapshot / Archivo de Control y Memoria
 # -------------------------------------------------------------
@@ -136,34 +191,7 @@ def registrar_producto_procesado(codigo_serpi):
 def esta_procesado(codigo_serpi):
     inicializar_memoria_procesados()
     return str(codigo_serpi).strip() in st.session_state["productos_procesados_ids"]
-def obtener_precio_puntual_serpi(codigo_sku):
-    """Consulta el precio de un SKU específico directamente en SERPI sin recorrer todo el catálogo."""
-    try:
-        codigo_str = str(codigo_sku).strip()
-        # Probar consulta por código o idArticulo
-        res = consultar_serpi_api("/api/v1/ListaPrecioDetalle", params={"codigo": codigo_str, "limite": 1})
-        if res and isinstance(res, list) and len(res) > 0:
-            return float(res[0].get("precio", 0) or 0)
-        
-        # Fallback a ListaPrecios filtrada
-        res_lp = consultar_serpi_api("/api/v1/ListaPrecios", params={"codigo": codigo_str, "limite": 1})
-        if res_lp and isinstance(res_lp, list) and len(res_lp) > 0:
-            return float(res_lp[0].get("precio", 0) or 0)
-    except Exception:
-        pass
-    return None
 
-def obtener_stock_puntual_serpi(codigo_sku):
-    """Consulta las existencias de un SKU específico en la fecha de corte actual."""
-    try:
-        codigo_str = str(codigo_sku).strip()
-        hoy = datetime.now().strftime("%Y-%m-%d")
-        res = consultar_serpi_api("/api/v1/SaldoInventarioSinCosto", params={"fechaCorte": hoy, "codigo": codigo_str, "limite": 1})
-        if res and isinstance(res, list) and len(res) > 0:
-            return int(float(res[0].get("saldo", 0) or 0))
-    except Exception:
-        pass
-    return None
 # -------------------------------------------------------------
 # 4. Funciones Auxiliares y Mapeo Shopify
 # -------------------------------------------------------------
@@ -300,262 +328,155 @@ def obtener_product_id(row):
 
     return None, None
 
-def actualizar_stock_shopify(product_id, nueva_cantidad):
-    """
-    Activa el seguimiento de inventario (Tracked: True) y actualiza 
-    la cantidad física de la primera variante del producto.
-    """
+def obtener_sucursal_principal():
+    """Obtiene el GID y el ID numérico de la sucursal de inventario en Shopify."""
     try:
-        # 1. Obtener la Variante, su InventoryItem y su Location ID
-        query_var = """
-        query getProductInventoryDetails($id: ID!) {
-          product(id: $id) {
-            variants(first: 1) {
-              edges {
-                node {
-                  id
-                  inventoryItem {
-                    id
-                    tracked
-                  }
-                }
-              }
-            }
-          }
-          locations(first: 1) {
+        query_loc = """
+        query getLocations {
+          locations(first: 5) {
             edges {
               node {
                 id
+                legacyResourceId
               }
             }
           }
         }
         """
-        res = ejecutar_graphql(query_var, {"id": product_id})
-        if not res or "data" not in res or not res["data"].get("product"):
-            return [{"field": ["product"], "message": "No se encontró el producto en Shopify."}]
+        res = ejecutar_graphql(query_loc)
+        edges = res.get("data", {}).get("locations", {}).get("edges", [])
+        if edges:
+            node = edges[0]["node"]
+            loc_gid = node.get("id")
+            num_str = node.get("legacyResourceId") or (loc_gid.split("/")[-1] if loc_gid else None)
+            if loc_gid and num_str:
+                return loc_gid, int(num_str)
+    except Exception:
+        pass
 
-        variants = res["data"]["product"].get("variants", {}).get("edges", [])
-        locations = res["data"].get("locations", {}).get("edges", [])
-        
+    env_loc = os.getenv("SHOPIFY_LOCATION_ID", "").strip()
+    if env_loc:
+        num = int(env_loc.split("/")[-1])
+        return f"gid://shopify/Location/{num}", num
+
+    return "gid://shopify/Location/83831882001", 83831882001
+
+def obtener_location_gid_principal():
+    """Retorna el GID principal de la sucursal de inventario."""
+    loc_gid, _ = obtener_sucursal_principal()
+    return loc_gid
+
+
+def actualizar_stock_shopify(product_id, nueva_cantidad):
+    """
+    1. Asegura seguimiento de inventario en REST (tracked: True, inventory_management: 'shopify').
+    2. Conecta y fija las existencias en la sucursal activa de Shopify sin errores de permisos.
+    """
+    try:
+        prod_numeric_id = str(product_id).split("/")[-1]
+        rest_url = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}"
+        cantidad_int = int(float(nueva_cantidad or 0))
+
+        # 1. Consultar el producto por REST para obtener variante e inventory_item_id
+        r_prod = requests.get(f"{rest_url}/products/{prod_numeric_id}.json", headers=HEADERS, timeout=15)
+        if r_prod.status_code != 200:
+            return [{"field": ["product"], "message": f"Error consultando producto: {r_prod.text[:100]}"}]
+
+        prod_data = r_prod.json().get("product") or {}
+        variants = prod_data.get("variants", [])
         if not variants:
-            return [{"field": ["variant"], "message": "No se encontró ninguna variante."}]
-        if not locations:
-            return [{"field": ["location"], "message": "No se encontró ninguna ubicación de inventario."}]
-            
-        variant_node = variants[0]["node"]
-        inventory_item_id = variant_node["inventoryItem"]["id"]
-        location_id = locations[0]["node"]["id"]
-        variant_gid = variant_node["id"]
-        variant_numeric_id = variant_gid.split("/")[-1]
+            return [{"field": ["variant"], "message": "No se encontraron variantes en el producto."}]
 
-        # 2. Forzar que el InventoryItem tenga activo el rastreo de inventario
-        mutation_track = """
-        mutation activateTracking($id: ID!, $input: InventoryItemInput!) {
-          inventoryItemUpdate(id: $id, input: $input) {
-            inventoryItem {
-              id
-              tracked
-            }
-            userErrors {
-              field
-              message
-            }
-          }
-        }
-        """
-        ejecutar_graphql(mutation_track, {
-            "id": inventory_item_id,
-            "input": {"tracked": True}
-        })
+        variant_obj = variants[0]
+        variant_id = variant_obj.get("id")
+        inv_item_id = variant_obj.get("inventory_item_id")
 
-        # 3. Asignar el stock usando la API REST de variantes
-        REST_URL = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}"
-        url_variant_rest = f"{REST_URL}/variants/{variant_numeric_id}.json"
-        
-        payload_variant = {
-            "variant": {
-                "id": int(variant_numeric_id),
-                "inventory_management": "shopify",
-                "inventory_quantity": int(float(nueva_cantidad))
-            }
-        }
-        res_rest = requests.put(url_variant_rest, json=payload_variant, headers=HEADERS, timeout=15)
-        
-        if res_rest.status_code in [200, 201]:
-            return []
-        else:
-            return [{"field": ["rest_api"], "message": f"Error REST {res_rest.status_code}: {res_rest.text[:150]}"}]
+        if not inv_item_id:
+            return [{"field": ["inventory_item"], "message": "No se encontró ID de inventario."}]
+
+        # 2. ACTIVAR SEGUIMIENTO DE INVENTARIO
+        requests.put(
+            f"{rest_url}/inventory_items/{inv_item_id}.json",
+            headers=HEADERS,
+            json={"inventory_item": {"id": int(inv_item_id), "tracked": True}},
+            timeout=15
+        )
+        requests.put(
+            f"{rest_url}/variants/{variant_id}.json",
+            headers=HEADERS,
+            json={"variant": {"id": int(variant_id), "inventory_management": "shopify"}},
+            timeout=15
+        )
+
+        # 3. Obtener la sucursal activa de la tienda
+        loc_gid, loc_id_num = obtener_sucursal_principal()
+        if not loc_id_num:
+            return [{"field": ["location"], "message": "No se pudo determinar la sucursal de inventario."}]
+
+        # 4. Conectar la sucursal al inventory_item (REST connect)
+        try:
+            requests.post(
+                f"{rest_url}/inventory_levels/connect.json",
+                headers=HEADERS,
+                json={
+                    "location_id": int(loc_id_num),
+                    "inventory_item_id": int(inv_item_id)
+                },
+                timeout=15
+            )
+        except Exception:
+            pass
+
+        # 5. Fijar el stock exacto disponible por REST
+        r_set = requests.post(
+            f"{rest_url}/inventory_levels/set.json",
+            headers=HEADERS,
+            json={
+                "location_id": int(loc_id_num),
+                "inventory_item_id": int(inv_item_id),
+                "available": cantidad_int
+            },
+            timeout=15
+        )
+
+        if r_set.status_code not in (200, 201):
+            return [{"field": ["inventory_levels"], "message": f"Error fijando stock ({r_set.status_code}): {r_set.text[:120]}"}]
+
+        return []
 
     except Exception as e:
         return [{"field": ["inventory_exception"], "message": str(e)}]
 
-def actualizar_producto_con_esquema(product_id, row, campos_permitidos=None):
-    errores_totales = []
-    campos_estandar = SCHEMA.get("campos_estandar", {})
-    input_product = {"id": product_id}
-    
-    # 1. Descripción HTML
-    if campos_permitidos is None or "descriptionHtml" in campos_permitidos:
-        posibles_desc = campos_estandar.get("descriptionHtml", {}).get("posibles_columnas_excel", ["descriptionHtml", "descripcion", "descripcion_larga"])
-        v_desc = obtener_valor_fila(row, posibles_desc)
-        if v_desc is not None:
-            input_product["descriptionHtml"] = formatear_descripcion_html(v_desc)
-
-    # 2. Vendor / Proveedor
-    if campos_permitidos is None or "vendor" in campos_permitidos:
-        posibles_vendor = campos_estandar.get("vendor", {}).get("posibles_columnas_excel", ["vendor", "proveedor", "editorial"])
-        v_vendor = obtener_valor_fila(row, posibles_vendor)
-        if v_vendor is not None:
-            input_product["vendor"] = str(v_vendor)
-
-    # 3. Product Type / Categoría
-    if campos_permitidos is None or "productType" in campos_permitidos:
-        posibles_type = campos_estandar.get("productType", {}).get("posibles_columnas_excel", ["productType", "tipo", "categoria", "linea"])
-        v_type = obtener_valor_fila(row, posibles_type)
-        if v_type is not None:
-            input_product["productType"] = str(v_type)
-
-    # 4. Tags / Etiquetas (Nativo de Shopify)
-    if campos_permitidos is None or "tags" in campos_permitidos:
-        posibles_tags = campos_estandar.get("tags", {}).get("posibles_columnas_excel", ["tags", "etiquetas", "Etiquetas", "TAGS"])
-        v_tags = obtener_valor_fila(row, posibles_tags)
-        if v_tags is not None:
-            # Soporta strings separados por coma o listas
-            if isinstance(v_tags, list):
-                input_product["tags"] = [str(t).strip() for t in v_tags if str(t).strip()]
-            else:
-                input_product["tags"] = [t.strip() for t in str(v_tags).split(',') if t.strip()]
-
-    # 5. Metafields (custom.*)
-    metafields_input = []
-    metafields_schema = SCHEMA.get("metafields", {})
-    
-    for key_meta, info_meta in metafields_schema.items():
-        if campos_permitidos is not None and key_meta not in campos_permitidos:
-            continue
-        
-        # Ignorar si es el campo de etiquetas o descripción ya procesado como nativo
-        if key_meta.lower() in ["etiquetas", "tags", "descripcion", "descripcionhtml"]:
-            continue
-            
-        posibles = info_meta.get("posibles_columnas_excel", [key_meta])
-        v_meta = obtener_valor_fila(row, posibles)
-        if v_meta is not None:
-            v_meta_str = str(v_meta).strip()
-            tipo_meta = info_meta.get("type", "single_line_text_field")
-            if "metaobject_reference" in tipo_meta and not v_meta_str.startswith("gid://shopify/"):
-                continue
-
-            if tipo_meta == "boolean":
-                val_bool = v_meta_str.lower() in ['true', '1', 'si', 'sí', 'yes']
-                val_str = "true" if val_bool else "false"
-            else:
-                val_str = v_meta_str
-
-            metafields_input.append({
-                "namespace": info_meta.get("namespace", "custom"),
-                "key": info_meta.get("key", key_meta),
-                "value": val_str,
-                "type": tipo_meta
-            })
-
-    if metafields_input:
-        input_product["metafields"] = metafields_input
-
-    # Ejecutar actualización de Producto y Metafields
-    if len(input_product) > 1:
-        mutation_prod = """
-        mutation productUpdate($input: ProductInput!) {
-          productUpdate(input: $input) {
-            userErrors {
-              field
-              message
-            }
-          }
-        }
-        """
-        res_prod = ejecutar_graphql(mutation_prod, {"input": input_product})
-        err_p = res_prod.get("data", {}).get("productUpdate", {}).get("userErrors", [])
-        if err_p:
-            errores_totales.extend(err_p)
-
-    # 6. Variantes (Precio, SKU, Taxable)
-    v_price = None
-    if campos_permitidos is None or "price" in campos_permitidos:
-        v_price = obtener_valor_fila(row, campos_estandar.get("price", {}).get("posibles_columnas_excel", ["price", "precio"]))
-
-    v_sku = None
-    if campos_permitidos is None or "sku" in campos_permitidos:
-        v_sku = obtener_valor_fila(row, campos_estandar.get("sku", {}).get("posibles_columnas_excel", ["sku", "codigo", "serpi"]))
-
-    v_tax = None
-    if campos_permitidos is None or "taxable" in campos_permitidos:
-        v_tax = obtener_valor_fila(row, campos_estandar.get("taxable", {}).get("posibles_columnas_excel", ["taxable", "impuesto", "iva"]))
-
-    if v_price is not None or v_sku is not None or v_tax is not None:
-        query_var = """
-        query getVariantId($id: ID!) {
-          product(id: $id) {
-            variants(first: 1) {
-              edges {
-                node {
-                  id
-                }
-              }
-            }
-          }
-        }
-        """
-        res_var = ejecutar_graphql(query_var, {"id": product_id})
-        v_edges = res_var.get("data", {}).get("product", {}).get("variants", {}).get("edges", [])
-
-        if v_edges:
-            variant_gid = v_edges[0]["node"]["id"]
-            variant_numeric_id = variant_gid.split("/")[-1]
-            
-            variant_payload = {}
-            if v_price is not None:
-                variant_payload["price"] = str(v_price).strip()
-            if v_sku is not None:
-                variant_payload["sku"] = str(v_sku).strip()
-            if v_tax is not None:
-                val_str = str(v_tax).strip().upper()
-                variant_payload["taxable"] = val_str in ["TRUE", "1", "SI", "SÍ", "YES"]
-
-            REST_URL = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}"
-            url_variant_rest = f"{REST_URL}/variants/{variant_numeric_id}.json"
-            
-            exito_rest = False
-            intentos = 0
-            while not exito_rest and intentos < 3:
-                try:
-                    res_rest = requests.put(url_variant_rest, json={"variant": variant_payload}, headers=HEADERS, timeout=10)
-                    if res_rest.status_code in [200, 201]:
-                        exito_rest = True
-                    else:
-                        errores_totales.append({"field": ["variant"], "message": f"Error REST {res_rest.status_code}: {res_rest.text[:100]}"})
-                        break
-                except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-                    intentos += 1
-                    time.sleep(2)
-                    if intentos >= 3:
-                        errores_totales.append({"field": ["connection"], "message": "Error de conexión persistente con Shopify."})
-
-    return errores_totales
-
 def crear_producto_en_shopify(item_serpi):
+    """
+    PASO 1: Crea el producto (Título, Handle, Descripción, Tags y Metafields) con GraphQL.
+    PASO 2: Asigna SKU, Precio y Seguimiento con REST (/variants/{id}.json).
+    PASO 3: Publica en todos los canales de venta.
+    PASO 4: Asigna las existencias en la sucursal activa.
+    """
     try:
         codigo = str(item_serpi.get("codigo", "")).strip()
         titulo = str(item_serpi.get("descripcion", "")).strip()
-        precio = float(item_serpi.get("precio", 0) or 0)
-        stock = float(item_serpi.get("saldo", 0) or 0)
-        cp = item_serpi.get("camposPersonalizados", {}) or {}
 
+        # Recuperar precio y stock consolidados
+        precio_val = item_serpi.get("precio")
+        if precio_val is None or float(precio_val or 0) == 0:
+            precio_val = obtener_precio_puntual_serpi(codigo)
+            item_serpi["precio"] = precio_val
+        precio_float = float(precio_val or 0)
+
+        stock_val = item_serpi.get("saldo")
+        if stock_val is None:
+            stock_val = obtener_stock_puntual_serpi(codigo)
+            item_serpi["saldo"] = stock_val
+        stock_int = int(float(stock_val or 0))
+
+        cp = item_serpi.get("camposPersonalizados", {}) or {}
         handle = limpiar_para_handle(titulo)
         desc_raw = cp.get("descripcion") or item_serpi.get("descripcion_larga") or ""
         desc_html = formatear_descripcion_html(desc_raw)
 
+        # Tags nativos
         tags_raw = cp.get("etiquetas") or cp.get("tags") or ""
         tags_list = []
         if isinstance(tags_raw, list):
@@ -563,6 +484,7 @@ def crear_producto_en_shopify(item_serpi):
         elif isinstance(tags_raw, str) and tags_raw.strip():
             tags_list = [t.strip() for t in tags_raw.split(',') if t.strip()]
 
+        # Metafields
         metafields_input = [{
             "namespace": "custom",
             "key": "serpi",
@@ -583,6 +505,7 @@ def crear_producto_en_shopify(item_serpi):
                     "type": tipo_campo
                 })
 
+        # --- PASO 1: Creación del Producto Base ---
         input_product = {
             "title": titulo,
             "handle": handle,
@@ -624,36 +547,311 @@ def crear_producto_en_shopify(item_serpi):
 
         product_created = data.get("product")
         if not product_created:
-            return None, [{"field": ["productCreate"], "message": "Shopify no pudo crear el registro."}]
+            return None, [{"field": ["productCreate"], "message": "Shopify no pudo generar el registro."}]
 
         new_product_id = product_created.get("id")
-
-        # 1. Configurar SKU, Precio y Activar seguimiento en la Variante
         v_edges = product_created.get("variants", {}).get("edges", [])
+
+        # --- PASO 2: Asignar SKU, Precio y Seguimiento por REST ---
         if v_edges and new_product_id:
-            variant_gid = v_edges[0]["node"]["id"]
-            variant_numeric_id = variant_gid.split("/")[-1]
-            REST_URL = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}"
-            url_variant_rest = f"{REST_URL}/variants/{variant_numeric_id}.json"
+            variant_numeric_id = v_edges[0]["node"]["id"].split("/")[-1]
+            rest_url = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}"
             
             payload_variant = {
                 "variant": {
                     "id": int(variant_numeric_id),
                     "sku": codigo,
-                    "price": str(precio),
+                    "price": str(precio_float),
                     "inventory_management": "shopify"
                 }
             }
-            requests.put(url_variant_rest, json=payload_variant, headers=HEADERS, timeout=15)
+            requests.put(
+                f"{rest_url}/variants/{variant_numeric_id}.json",
+                headers=HEADERS,
+                json=payload_variant,
+                timeout=15
+            )
 
-        # 2. Forzar el rastreo y asignar el stock inicial (aunque sea 0)
+        # --- PASO 3: Publicar en todos los Canales de Venta ---
         if new_product_id:
-            actualizar_stock_shopify(new_product_id, stock)
+            publicar_producto_en_canales(new_product_id)
+
+        # --- PASO 4: Asentar el inventario físico en la sucursal ---
+        if new_product_id:
+            err_stock = actualizar_stock_shopify(new_product_id, stock_int)
+            if err_stock:
+                return new_product_id, err_stock
 
         return new_product_id, []
+
     except Exception as e:
         return None, [{"field": ["create_exception"], "message": str(e)}]
     
+def actualizar_producto_con_esquema(product_id, row, campos_permitidos=None):
+    """
+    Llena simultáneamente:
+    1. Atributos NATIVOS (vendor, productType, tags, descriptionHtml).
+    2. METACAMPOS (custom.editorial, custom.autor, custom.paginas, etc.).
+    3. VARIANTE (Precio y SKU).
+    """
+    errores_totales = []
+    campos_estandar = SCHEMA.get("campos_estandar", {})
+    input_product = {"id": product_id}
+
+    # -------------------------------------------------------------
+    # 1. ATRIBUTOS NATIVOS DE SHOPIFY
+    # -------------------------------------------------------------
+    
+    # A. Descripción HTML
+    if campos_permitidos is None or "descriptionHtml" in campos_permitidos:
+        posibles_desc = campos_estandar.get("descriptionHtml", {}).get(
+            "posibles_columnas_excel", ["descriptionHtml", "descripcion", "descripcion_larga", "sinopsis"]
+        )
+        v_desc = obtener_valor_fila(row, posibles_desc)
+        if v_desc is not None:
+            input_product["descriptionHtml"] = formatear_descripcion_html(v_desc)
+
+    # B. Vendor / Proveedor / Editorial (NATIVO)
+    if campos_permitidos is None or "vendor" in campos_permitidos:
+        posibles_vendor = campos_estandar.get("vendor", {}).get(
+            "posibles_columnas_excel", ["vendor", "editorial", "proveedor", "marca"]
+        )
+        v_vendor = obtener_valor_fila(row, posibles_vendor)
+        if v_vendor is not None:
+            input_product["vendor"] = str(v_vendor).strip()
+
+    # C. Product Type / Categoría / Línea (NATIVO)
+    if campos_permitidos is None or "productType" in campos_permitidos:
+        posibles_type = campos_estandar.get("productType", {}).get(
+            "posibles_columnas_excel", ["productType", "tipo", "categoria", "linea", "genero"]
+        )
+        v_type = obtener_valor_fila(row, posibles_type)
+        if v_type is not None:
+            input_product["productType"] = str(v_type).strip()
+
+    # D. Tags / Etiquetas (NATIVO)
+    if campos_permitidos is None or "tags" in campos_permitidos:
+        posibles_tags = campos_estandar.get("tags", {}).get(
+            "posibles_columnas_excel", ["tags", "etiquetas", "Etiquetas", "TAGS"]
+        )
+        v_tags = obtener_valor_fila(row, posibles_tags)
+        if v_tags is not None:
+            if isinstance(v_tags, list):
+                input_product["tags"] = [str(t).strip() for t in v_tags if str(t).strip()]
+            else:
+                input_product["tags"] = [t.strip() for t in str(v_tags).split(',') if t.strip()]
+
+    # -------------------------------------------------------------
+    # 2. METACAMPOS (custom.*) - Se llenan todos los definidos en el esquema
+    # -------------------------------------------------------------
+    metafields_input = []
+    metafields_schema = SCHEMA.get("metafields", {})
+
+    for key_meta, info_meta in metafields_schema.items():
+        if campos_permitidos is not None and key_meta not in campos_permitidos:
+            continue
+
+        posibles = info_meta.get("posibles_columnas_excel", [key_meta])
+        v_meta = obtener_valor_fila(row, posibles)
+        if v_meta is not None:
+            v_meta_str = str(v_meta).strip()
+            tipo_meta = info_meta.get("type", "single_line_text_field")
+
+            # Tratamiento especial para booleanos
+            if tipo_meta == "boolean":
+                val_bool = v_meta_str.lower() in ['true', '1', 'si', 'sí', 'yes']
+                val_str = "true" if val_bool else "false"
+            else:
+                val_str = v_meta_str
+
+            metafields_input.append({
+                "namespace": info_meta.get("namespace", "custom"),
+                "key": info_meta.get("key", key_meta),
+                "value": val_str,
+                "type": tipo_meta
+            })
+
+    if metafields_input:
+        input_product["metafields"] = metafields_input
+
+    # Ejecutar actualización en Shopify (Nativos + Metacampos)
+    if len(input_product) > 1:
+        mutation_prod = """
+        mutation productUpdate($input: ProductInput!) {
+          productUpdate(input: $input) {
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+        """
+        res_p = ejecutar_graphql(mutation_prod, {"input": input_product})
+        err_p = res_p.get("data", {}).get("productUpdate", {}).get("userErrors", [])
+        if err_p:
+            errores_totales.extend(err_p)
+
+    # -------------------------------------------------------------
+    # 3. PRECIO Y SKU EN LA VARIANTE
+    # -------------------------------------------------------------
+    v_price = None
+    if campos_permitidos is None or "price" in campos_permitidos:
+        v_price = obtener_valor_fila(row, campos_estandar.get("price", {}).get("posibles_columnas_excel", ["price", "precio"]))
+
+    v_sku = None
+    if campos_permitidos is None or "sku" in campos_permitidos:
+        v_sku = obtener_valor_fila(row, campos_estandar.get("sku", {}).get("posibles_columnas_excel", ["sku", "codigo", "serpi"]))
+
+    if v_price is not None or v_sku is not None:
+        query_var = """
+        query getVariantForUpdate($id: ID!) {
+          product(id: $id) {
+            variants(first: 1) {
+              edges {
+                node {
+                  id
+                }
+              }
+            }
+          }
+        }
+        """
+        res_v = ejecutar_graphql(query_var, {"id": product_id})
+        v_edges = res_v.get("data", {}).get("product", {}).get("variants", {}).get("edges", [])
+        if v_edges:
+            variant_gid = v_edges[0]["node"]["id"]
+            
+            mutation_bulk = """
+            mutation updateVariantBulk($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+              productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+                userErrors {
+                  field
+                  message
+                }
+              }
+            }
+            """
+            var_item = {"id": variant_gid}
+            if v_price is not None:
+                var_item["price"] = f"{float(v_price):.2f}"
+            if v_sku is not None:
+                var_item["sku"] = str(v_sku).strip()
+
+            res_bulk = ejecutar_graphql(mutation_bulk, {
+                "productId": product_id,
+                "variants": [var_item]
+            })
+            err_b = res_bulk.get("data", {}).get("productVariantsBulkUpdate", {}).get("userErrors", [])
+            if err_b:
+                errores_totales.extend(err_b)
+
+    # -------------------------------------------------------------
+    # 4. PUBLICACIÓN EN TODOS LOS CANALES DE VENTA (Online Store, POS, Redes, Apps)
+    # -------------------------------------------------------------
+    err_pub = publicar_producto_en_canales(product_id)
+    if err_pub:
+        for ep in err_pub:
+            if "publications_permission" not in ep.get("field", []):
+                errores_totales.append(ep)
+
+    return errores_totales
+
+def verificar_permisos_canales_shopify():
+    """Verifica si el token de Shopify tiene permisos para publicar en canales externos."""
+    try:
+        res = ejecutar_graphql("""
+        query {
+          currentAppInstallation {
+            accessScopes {
+              handle
+            }
+          }
+        }
+        """)
+        scopes = [s["handle"] for s in res.get("data", {}).get("currentAppInstallation", {}).get("accessScopes", [])]
+        has_read = "read_publications" in scopes
+        has_write = "write_publications" in scopes
+        return (has_read and has_write), scopes
+    except Exception:
+        return False, []
+
+def publicar_producto_en_canales(product_id):
+    """
+    Publica el producto en todos los canales de venta activos:
+    1. Asegura que el producto esté publicado y activo vía REST (Tienda Online / Global).
+    2. Publica en todos los canales externos (POS, Facebook & Instagram, Google & YouTube, TikTok, Shop) vía GraphQL.
+    """
+    errores = []
+    try:
+        prod_numeric_id = str(product_id).split("/")[-1]
+        prod_gid = product_id if str(product_id).startswith("gid://") else f"gid://shopify/Product/{product_id}"
+        rest_url = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}"
+
+        # 1. Asegurar estado activo y publicación global vía REST (Online Store)
+        try:
+            requests.put(
+                f"{rest_url}/products/{prod_numeric_id}.json",
+                headers=HEADERS,
+                json={
+                    "product": {
+                        "id": int(prod_numeric_id),
+                        "published": True,
+                        "published_scope": "global",
+                        "status": "active"
+                    }
+                },
+                timeout=15
+            )
+        except Exception:
+            pass
+
+        # 2. Consultar todos los canales de venta (Publications)
+        query_pubs = """
+        query getStorePublications {
+          publications(first: 30) {
+            edges {
+              node {
+                id
+                name
+              }
+            }
+          }
+        }
+        """
+        res_pubs = ejecutar_graphql(query_pubs)
+        if res_pubs and isinstance(res_pubs, dict):
+            # Si hay error por falta de permisos en Shopify
+            if "errors" in res_pubs and res_pubs.get("errors"):
+                err_msg = res_pubs["errors"][0].get("message", "")
+                if "access scope" in err_msg.lower() or "denied" in err_msg.lower():
+                    return [{
+                        "field": ["publications_permission"],
+                        "message": "Faltan los permisos 'read_publications' y 'write_publications' en la App de Shopify para publicar en Facebook, Google, TikTok y POS."
+                    }]
+
+            pubs = res_pubs.get("data", {}).get("publications", {}).get("edges", [])
+            if pubs:
+                mutation_pub = """
+                mutation publishToAllSalesChannels($id: ID!, $input: [PublicationInput!]!) {
+                  publishablePublish(id: $id, input: $input) {
+                    userErrors {
+                      field
+                      message
+                    }
+                  }
+                }
+                """
+                input_list = [{"publicationId": p["node"]["id"]} for p in pubs if p.get("node", {}).get("id")]
+                if input_list:
+                    res_p = ejecutar_graphql(mutation_pub, {"id": prod_gid, "input": input_list})
+                    err_user = res_p.get("data", {}).get("publishablePublish", {}).get("userErrors", [])
+                    if err_user:
+                        errores.extend(err_user)
+
+        return errores
+    except Exception as e:
+        return [{"field": ["publish_exception"], "message": str(e)}]
+
 # -------------------------------------------------------------
 # 5. MODAL DE PREVISUALIZACIÓN UNIFICADO
 # -------------------------------------------------------------
@@ -666,7 +864,7 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
     nuevo_stock = item_consolidado.get("saldo")
     nuevo_precio = item_consolidado.get("precio")
     
-    if nuevo_precio is None:
+    if nuevo_precio is None or float(nuevo_precio or 0) == 0:
         nuevo_precio = obtener_precio_puntual_serpi(codigo_serpi)
         item_consolidado["precio"] = nuevo_precio
 
@@ -718,9 +916,14 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
                     new_id, errs = crear_producto_en_shopify(item_consolidado)
                     if new_id:
                         registrar_producto_procesado(codigo_serpi)
-                        actualizar_sku_en_snapshot(codigo_serpi, stock=nuevo_stock, precio=nuevo_precio)
+                        actualizar_sku_en_snapshot(codigo_serpi, stock=item_consolidado.get("saldo", nuevo_stock), precio=item_consolidado.get("precio", nuevo_precio))
                         st.session_state[f"creado_{codigo_serpi}"] = new_id
-                        st.success(f"🎉 ¡Producto creado exitosamente! (ID: `{new_id}`)")
+                        st.balloons()
+                        stock_final = int(float(item_consolidado.get("saldo", nuevo_stock) or 0))
+                        if errs:
+                            st.warning(f"⚠️ ¡Producto creado (ID: `{new_id}`), pero hubo un aviso en inventario: {errs}")
+                        else:
+                            st.success(f"🎉 ¡Producto creado y publicado exitosamente con {stock_final} unidades de inventario! (ID: `{new_id}`)")
                     else:
                         st.error(f"Error al crear: {errs}")
 
@@ -831,11 +1034,11 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
                     if not errs_totales:
                         registrar_producto_procesado(codigo_serpi)
                         actualizar_sku_en_snapshot(codigo_serpi, stock=nuevo_stock, precio=nuevo_precio)
+                        st.balloons()
                         st.success(f"🎉 ¡Producto '{prod_sp.get('title')}' actualizado con éxito!")
                     else:
                         st.error(f"Errores al sincronizar: {errs_totales}")
 
-            # Subida de portada integrada para productos existentes
             with st.expander("🖼️ Actualizar o Añadir Portada a este Libro", expanded=False):
                 up_img_ex = st.file_uploader("Selecciona archivo de imagen", type=["jpg", "png", "webp", "jpeg"], key=f"up_ex_{codigo_serpi}")
                 if up_img_ex and st.button("🚀 Cargar Imagen a Galería de Shopify", type="secondary", use_container_width=True, key=f"btn_up_ex_{codigo_serpi}"):
@@ -854,15 +1057,26 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2897/2897818.png", width=50)
     st.title("Conexión & Estado")
     
-    # 1. Estado de Conexión Shopify
     if API_TOKEN and RAW_SHOP_URL:
         st.success(f"**Shopify Conectado**\n\n`{RAW_SHOP_URL}`")
     else:
         st.error("**Shopify Desconectado**\n\nVerifica las credenciales en el archivo `.env`")
     
+    canales_activos, scopes_activos = verificar_permisos_canales_shopify()
+    if canales_activos:
+        st.success("**Canales de Venta Conectados**\n\n`Tienda Online, POS, Redes, Apps`")
+    else:
+        with st.container(border=True):
+            st.warning("⚠️ **Canales Externos Pendientes**")
+            st.caption(
+                "Para que Shopify publique en **Facebook, Google, TikTok y POS**, activa estos permisos en tu App de Shopify:\n\n"
+                "1. En Shopify Admin ve a **Apps > Desarrollar apps > [Tu App] > Configuración**.\n"
+                "2. Marca los permisos: **`read_publications`** y **`write_publications`**.\n"
+                "3. Guarda los cambios."
+            )
+
     st.write("")
     
-    # 2. Estado de Conexión ERP SERPI
     serpi_key = SERPI_HEADERS.get("secretkey")
     serpi_token = SERPI_HEADERS.get("Authorization", "").replace("Bearer ", "").strip()
     
@@ -870,7 +1084,6 @@ with st.sidebar:
         st.success(f"**SERPI Conectado**\n\n`{SERPI_BASE_URL}`")
     else:
         st.error("**SERPI Desconectado**\n\nFalta SecretKey o Token en el archivo `.env`")
-    
 
 st.title("📦 Centro de Sincronización SERPI ➔ Shopify")
 st.caption("Automatización y auditoría de inventarios, precios y catálogo en tiempo real.")
@@ -905,7 +1118,7 @@ with tab_unificado:
                     st.session_state["productos_procesados_ids"] = set()
                     st.rerun()
 
-    # --- FLUJO 1: Auditoría Rápida (Sin sobrecarga) ---
+    # --- FLUJO 1: Auditoría Rápida ---
     if btn_fast_sync:
         snapshot_previo = cargar_snapshot_control()
         with st.spinner("Consultando artículos modificados recientemente en SERPI..."):
@@ -936,7 +1149,7 @@ with tab_unificado:
                 st.session_state.pop("cache_unificado", None)
                 st.info("✅ Sin modificaciones de catálogo en el rango horario seleccionado.")
 
-    # --- FLUJO 2: Reconstrucción Global Opcional (Snapshot Completo) ---
+    # --- FLUJO 2: Reconstrucción Global Opcional ---
     if btn_full_snapshot:
         snapshot_previo = cargar_snapshot_control()
         with st.spinner("Paginando catálogo completo de SERPI (40.000 ítems)..."):
@@ -944,19 +1157,25 @@ with tab_unificado:
             precios_raw = consultar_precios_completos()
             
             nuevo_snapshot = dict(snapshot_previo)
+            # 1. Sumar existencias de todas las bodegas
             for item in saldos_raw:
                 cod = str(item.get("codigo", "")).strip()
                 if cod:
                     if cod not in nuevo_snapshot:
                         nuevo_snapshot[cod] = {}
-                    nuevo_snapshot[cod]["stock"] = int(float(item.get("saldo", 0) or 0))
+                    stock_act = nuevo_snapshot[cod].get("stock", 0)
+                    nuevo_snapshot[cod]["stock"] = stock_act + int(float(item.get("saldo", 0) or 0))
                     
+            # 2. Asignar precios válidos (priorizando LISTA PP)
             for item in precios_raw:
                 cod = str(item.get("codigo") or item.get("id_articulo", "")).strip()
                 if cod:
-                    if cod not in nuevo_snapshot:
-                        nuevo_snapshot[cod] = {}
-                    nuevo_snapshot[cod]["precio"] = float(item.get("precio", 0) or 0)
+                    p_val = float(item.get("precio", 0) or 0)
+                    if p_val > 0:
+                        if cod not in nuevo_snapshot:
+                            nuevo_snapshot[cod] = {}
+                        if "precio" not in nuevo_snapshot[cod] or nuevo_snapshot[cod]["precio"] == 0 or item.get("id_listaprecio") == 1:
+                            nuevo_snapshot[cod]["precio"] = p_val
                     
             guardar_snapshot_control(nuevo_snapshot)
             st.success(f"🎉 Base de control global actualizada con **{len(nuevo_snapshot)}** productos.")
@@ -975,51 +1194,30 @@ with tab_unificado:
         con_precio = sum(1 for p in lista_cache if "💰 Precio" in str(p.get("motivo", "")))
         pendientes_count = sum(1 for p in lista_cache if not esta_procesado(p.get("codigo")))
 
-        # 1. BOTONES INTERACTIVOS DE KPI
         st.write("")
         kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
 
         with kpi_col1:
             is_active = st.session_state["filtro_kpi_activo"] == "TODOS"
-            if st.button(
-                f"📦 Total Novedades\n### {total_art}", 
-                type="primary" if is_active else "secondary", 
-                use_container_width=True,
-                key="btn_kpi_todos"
-            ):
+            if st.button(f"📦 Total Novedades\n### {total_art}", type="primary" if is_active else "secondary", use_container_width=True, key="btn_kpi_todos"):
                 st.session_state["filtro_kpi_activo"] = "TODOS"
                 st.rerun()
 
         with kpi_col2:
             is_active = st.session_state["filtro_kpi_activo"] == "STOCK"
-            if st.button(
-                f"🔄 Con Cambio Stock\n### {con_stock}", 
-                type="primary" if is_active else "secondary", 
-                use_container_width=True,
-                key="btn_kpi_stock"
-            ):
+            if st.button(f"🔄 Con Cambio Stock\n### {con_stock}", type="primary" if is_active else "secondary", use_container_width=True, key="btn_kpi_stock"):
                 st.session_state["filtro_kpi_activo"] = "STOCK"
                 st.rerun()
 
         with kpi_col3:
             is_active = st.session_state["filtro_kpi_activo"] == "PRECIO"
-            if st.button(
-                f"💰 Con Cambio Precio\n### {con_precio}", 
-                type="primary" if is_active else "secondary", 
-                use_container_width=True,
-                key="btn_kpi_precio"
-            ):
+            if st.button(f"💰 Con Cambio Precio\n### {con_precio}", type="primary" if is_active else "secondary", use_container_width=True, key="btn_kpi_precio"):
                 st.session_state["filtro_kpi_activo"] = "PRECIO"
                 st.rerun()
 
         with kpi_col4:
             is_active = st.session_state["filtro_kpi_activo"] == "PENDIENTES"
-            if st.button(
-                f"⏳ Pendientes por Aplicar\n### {pendientes_count}", 
-                type="primary" if is_active else "secondary", 
-                use_container_width=True,
-                key="btn_kpi_pendientes"
-            ):
+            if st.button(f"⏳ Pendientes por Aplicar\n### {pendientes_count}", type="primary" if is_active else "secondary", use_container_width=True, key="btn_kpi_pendientes"):
                 st.session_state["filtro_kpi_activo"] = "PENDIENTES"
                 st.rerun()
 
@@ -1029,7 +1227,6 @@ with tab_unificado:
 
         st.divider()
 
-        # Filtrar elementos según el KPI activo
         libros_segmentados = []
         for p in lista_cache:
             cod = str(p.get("codigo", "")).strip()
@@ -1045,7 +1242,6 @@ with tab_unificado:
 
             libros_segmentados.append(p)
 
-        # 2. INSPECTOR INDIVIDUAL CON BUSCADOR EN VIVO
         with st.container(border=True):
             st.markdown("#### 🔎 Inspección y Actualización Focalizada")
             
@@ -1096,7 +1292,6 @@ with tab_unificado:
                 if prod_u_key and st.button("🔍 Abrir Inspector", type="primary", use_container_width=True, key="btn_open_inspector_search"):
                     mostrar_modal_previsualizacion_unificado(opciones_unificadas[prod_u_key])
 
-        # 3. MATRIZ DE NOVEDADES
         st.write("")
         st.markdown(f"#### 📊 Matriz de Novedades ({len(libros_disponibles)} productos)")
         
@@ -1132,7 +1327,6 @@ with tab_unificado:
                 }
             )
 
-        # 4. SINCRONIZACIÓN MASIVA EN LOTE
         st.write("")
         with st.container(border=True):
             col_mas_info, col_mas_btn = st.columns([3, 2])
@@ -1158,6 +1352,11 @@ with tab_unificado:
                             stk_serpi = item.get("saldo")
                             prc_serpi = item.get("precio")
                             
+                            if stk_serpi is None:
+                                stk_serpi = obtener_stock_puntual_serpi(cod_serpi)
+                            if prc_serpi is None or float(prc_serpi or 0) == 0:
+                                prc_serpi = obtener_precio_puntual_serpi(cod_serpi)
+                            
                             status.text(f"[{idx+1}/{total_p}] Sincronizando: {tit_serpi[:30]}...")
                             fila_v = pd.Series({"serpi": cod_serpi, "descripcion": tit_serpi, "price": prc_serpi, **cp_serpi})
                             
@@ -1178,6 +1377,7 @@ with tab_unificado:
                         status.empty()
                         st.success(f"🎉 Lote finalizado. Sincronizados: {exitos} | No encontrados: {errores}")
                         st.rerun()
+
 # =============================================================
 # PESTAÑA 2: CARGA MANUAL VÍA EXCEL/CSV
 # =============================================================
