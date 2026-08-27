@@ -17,6 +17,191 @@ from subir_imagenes import buscar_producto_por_nombre_y_serpi, cargar_imagen_a_s
 # -------------------------------------------------------------
 st.set_page_config(page_title="Sincronizador SERPI ➔ Shopify", layout="wide", page_icon="📦")
 
+# -------------------------------------------------------------
+# Google Material Design 3 Styling
+# -------------------------------------------------------------
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@300;400;500;700&display=swap');
+
+/* Tipografía Base y Suavizado */
+html, body, [class*="css"], .stMarkdown, p, span, label, div {
+    font-family: 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+
+/* Layout Principal */
+.main .block-container {
+    padding-top: 1.8rem;
+    padding-bottom: 3rem;
+    max-width: 1400px;
+}
+
+/* Scrollbar Material */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.32);
+}
+
+/* Contenedores y Tarjetas Material 3 */
+[data-testid="stVerticalBlockBorderWrapper"] {
+    background: #181C24 !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-radius: 20px !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.12) !important;
+    padding: 1.25rem !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Barra Lateral Material 3 */
+[data-testid="stSidebar"] {
+    background-color: #13161C !important;
+    border-right: 1px solid rgba(255, 255, 255, 0.06) !important;
+}
+
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+    font-family: 'Google Sans', sans-serif !important;
+    font-weight: 600 !important;
+    color: #E2E8F0 !important;
+}
+
+/* Botones Google Material 3 */
+button[kind="primary"] {
+    background-color: #1A73E8 !important;
+    color: #FFFFFF !important;
+    border: none !important;
+    border-radius: 24px !important;
+    font-family: 'Google Sans', sans-serif !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.25px !important;
+    padding: 0.55rem 1.4rem !important;
+    box-shadow: 0 2px 6px rgba(26, 115, 232, 0.3) !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+button[kind="primary"]:hover {
+    background-color: #1765CC !important;
+    box-shadow: 0 4px 12px rgba(26, 115, 232, 0.45) !important;
+    transform: translateY(-1px) !important;
+}
+
+button[kind="primary"]:active {
+    transform: translateY(0) !important;
+    box-shadow: 0 1px 3px rgba(26, 115, 232, 0.3) !important;
+}
+
+button[kind="secondary"] {
+    background-color: #222733 !important;
+    color: #E2E8F0 !important;
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    border-radius: 24px !important;
+    font-family: 'Google Sans', sans-serif !important;
+    font-weight: 500 !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+button[kind="secondary"]:hover {
+    background-color: #2C3342 !important;
+    border-color: rgba(255, 255, 255, 0.22) !important;
+    color: #FFFFFF !important;
+    transform: translateY(-1px) !important;
+}
+
+/* Pestañas Material 3 */
+[data-testid="stTabs"] [data-baseweb="tab-list"] {
+    gap: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    background: transparent;
+    padding-bottom: 4px;
+}
+
+[data-testid="stTabs"] [data-baseweb="tab"] {
+    border-radius: 16px 16px 0 0;
+    font-family: 'Google Sans', sans-serif !important;
+    font-weight: 500 !important;
+    padding: 10px 20px !important;
+    color: #9AA0A6 !important;
+    border: none !important;
+    background: transparent !important;
+    transition: all 0.2s ease !important;
+}
+
+[data-testid="stTabs"] [aria-selected="true"] {
+    color: #8AB4F8 !important;
+    font-weight: 600 !important;
+    border-bottom: 3px solid #8AB4F8 !important;
+}
+
+/* Campos de Texto y Selectores Material */
+div[data-baseweb="input"] > div, div[data-baseweb="select"] > div {
+    border-radius: 14px !important;
+    background-color: #1F242E !important;
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    transition: all 0.2s ease !important;
+}
+
+div[data-baseweb="input"] > div:focus-within, div[data-baseweb="select"] > div:focus-within {
+    border-color: #8AB4F8 !important;
+    box-shadow: 0 0 0 2px rgba(138, 180, 248, 0.25) !important;
+}
+
+/* Pills / Chips de Filtro */
+[data-testid="stPills"] button {
+    border-radius: 20px !important;
+    font-family: 'Google Sans', sans-serif !important;
+    font-weight: 500 !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+}
+
+/* Diálogo Modal */
+div[role="dialog"] {
+    border-radius: 28px !important;
+    background-color: #181C24 !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5) !important;
+}
+
+/* Alertas y Notificaciones */
+[data-testid="stAlert"] {
+    border-radius: 16px !important;
+    border: none !important;
+    font-family: 'Google Sans', sans-serif !important;
+}
+
+/* Métricas Material */
+[data-testid="stMetricValue"] {
+    font-family: 'Google Sans', sans-serif !important;
+    font-weight: 700 !important;
+    color: #E2E8F0 !important;
+}
+
+[data-testid="stMetricLabel"] {
+    font-family: 'Google Sans', sans-serif !important;
+    font-weight: 500 !important;
+    color: #9AA0A6 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 0.75rem;
+}
+
+/* Dataframe / Tablas */
+[data-testid="stDataFrame"] {
+    border-radius: 16px !important;
+    overflow: hidden !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 base_dir = Path(__file__).parent
 load_dotenv(dotenv_path=base_dir / '.env')
 load_dotenv(dotenv_path=base_dir / 'Shopify.env')
@@ -75,6 +260,100 @@ def consultar_todos_los_registros_serpi(endpoint, params_base=None, tamano_pagin
         pagina += 1
         time.sleep(0.05)
     return todos_los_items
+
+MAPEO_GRUPOS_CONTABLES = {
+    2: "Librería",
+    1: "Papelería",
+    3: "Servicios",
+    4: "Juguetería",
+    5: "Accesorios"
+}
+
+def resolver_grupo_contable_articulo(row):
+    """
+    Obtiene el nombre del Grupo Contable a partir de idgrupocontable o campos similares.
+    2 -> Librería
+    1 -> Papelería
+    3 -> Servicios
+    4 -> Juguetería
+    5 -> Accesorios
+    """
+    val_id = None
+    if isinstance(row, dict):
+        val_id = row.get("idgrupocontable") or row.get("id_grupocontable") or row.get("id_grupo_contable") or row.get("idGrupoContable")
+    elif isinstance(row, pd.Series):
+        for k in ["idgrupocontable", "id_grupocontable", "id_grupo_contable", "idGrupoContable"]:
+            if k in row and pd.notna(row[k]):
+                val_id = row[k]
+                break
+
+    if val_id is not None:
+        try:
+            id_num = int(val_id)
+            if id_num in MAPEO_GRUPOS_CONTABLES:
+                return MAPEO_GRUPOS_CONTABLES[id_num]
+            else:
+                return f"Grupo {id_num}"
+        except (ValueError, TypeError):
+            pass
+
+    # Si viene el nombre directamente en texto (por ejemplo desde Excel o campos personalizados)
+    val_txt = None
+    if isinstance(row, dict):
+        val_txt = row.get("grupocontable") or row.get("grupo_contable") or row.get("linea") or row.get("Linea")
+        if not val_txt:
+            cp = row.get("camposPersonalizados") or {}
+            if isinstance(cp, dict):
+                val_txt = cp.get("grupocontable") or cp.get("linea")
+    elif isinstance(row, pd.Series):
+        for k in ["grupocontable", "grupo_contable", "linea", "Linea", "LINEA"]:
+            if k in row and pd.notna(row[k]):
+                val_txt = row[k]
+                break
+
+    if val_txt:
+        txt_limpio = str(val_txt).strip()
+        txt_lower = txt_limpio.lower()
+        if "librer" in txt_lower or "libro" in txt_lower or "literatura" in txt_lower:
+            return "Librería"
+        elif "papel" in txt_lower:
+            return "Papelería"
+        elif "serv" in txt_lower:
+            return "Servicios"
+        elif "juguet" in txt_lower:
+            return "Juguetería"
+        elif "acces" in txt_lower:
+            return "Accesorios"
+        return txt_limpio
+
+    return "Librería"
+
+def determinar_taxable_desde_fila(row):
+    """
+    Determina si el producto cobra impuestos (taxable=True) o no (taxable=False) en Shopify.
+    Regla de Negocio:
+    - Si grupo contable es LIBRERÍA (idgrupocontable = 2) -> taxable = False (NO cobra impuestos / Exento de IVA).
+    - Si es PAPELERÍA (1), SERVICIOS (3), JUGUETERÍA (4), ACCESORIOS (5) o cualquier otro -> taxable = True (SÍ cobra impuestos / Gravado).
+    - Si se especifica explícitamente en columna 'taxable'/'impuesto' en Excel, se respeta dicho valor.
+    """
+    # 1. Si viene un campo directo de taxable / impuesto (en Excel / CSV)
+    if isinstance(row, (dict, pd.Series)):
+        posibles_imp = ["taxable", "Taxable", "Variant Taxable", "impuesto", "Impuesto", "impuestos", "aplica_impuesto"]
+        for p in posibles_imp:
+            val = row.get(p) if isinstance(row, dict) else (row[p] if p in row and pd.notna(row[p]) else None)
+            if val is not None and str(val).strip() != "":
+                val_s = str(val).strip().lower()
+                if val_s in ['false', '0', 'no', 'exento', 'f']:
+                    return False
+                elif val_s in ['true', '1', 'si', 'sí', 's', 't', 'gravado']:
+                    return True
+
+    # 2. Evaluar según el Grupo Contable de SERPI
+    grupo = resolver_grupo_contable_articulo(row)
+    if str(grupo).strip().lower() in ["librería", "libreria"]:
+        return False
+    else:
+        return True
 
 def consultar_articulos_modificados(horas=24):
     ahora = datetime.now()
@@ -552,16 +831,18 @@ def crear_producto_en_shopify(item_serpi):
         new_product_id = product_created.get("id")
         v_edges = product_created.get("variants", {}).get("edges", [])
 
-        # --- PASO 2: Asignar SKU, Precio y Seguimiento por REST ---
+        # --- PASO 2: Asignar SKU, Precio, Taxable y Seguimiento por REST ---
         if v_edges and new_product_id:
             variant_numeric_id = v_edges[0]["node"]["id"].split("/")[-1]
             rest_url = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}"
+            es_taxable = determinar_taxable_desde_fila(item_serpi)
             
             payload_variant = {
                 "variant": {
                     "id": int(variant_numeric_id),
                     "sku": codigo,
                     "price": str(precio_float),
+                    "taxable": es_taxable,
                     "inventory_management": "shopify"
                 }
             }
@@ -692,7 +973,7 @@ def actualizar_producto_con_esquema(product_id, row, campos_permitidos=None):
             errores_totales.extend(err_p)
 
     # -------------------------------------------------------------
-    # 3. PRECIO Y SKU EN LA VARIANTE
+    # 3. PRECIO, SKU Y TAXABLE (IMPUESTOS) EN LA VARIANTE
     # -------------------------------------------------------------
     v_price = None
     if campos_permitidos is None or "price" in campos_permitidos:
@@ -702,7 +983,11 @@ def actualizar_producto_con_esquema(product_id, row, campos_permitidos=None):
     if campos_permitidos is None or "sku" in campos_permitidos:
         v_sku = obtener_valor_fila(row, campos_estandar.get("sku", {}).get("posibles_columnas_excel", ["sku", "codigo", "serpi"]))
 
-    if v_price is not None or v_sku is not None:
+    v_taxable = None
+    if campos_permitidos is None or any(c in (campos_permitidos or []) for c in ["taxable", "impuesto", "impuestos", "linea", "idlinea"]):
+        v_taxable = determinar_taxable_desde_fila(row)
+
+    if v_price is not None or v_sku is not None or v_taxable is not None:
         query_var = """
         query getVariantForUpdate($id: ID!) {
           product(id: $id) {
@@ -736,6 +1021,8 @@ def actualizar_producto_con_esquema(product_id, row, campos_permitidos=None):
                 var_item["price"] = f"{float(v_price):.2f}"
             if v_sku is not None:
                 var_item["sku"] = str(v_sku).strip()
+            if v_taxable is not None:
+                var_item["taxable"] = bool(v_taxable)
 
             res_bulk = ejecutar_graphql(mutation_bulk, {
                 "productId": product_id,
@@ -884,6 +1171,8 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
             "serpi": codigo_serpi,
             "descripcion": titulo_serpi,
             "price": nuevo_precio,
+            "idgrupocontable": item_consolidado.get("idgrupocontable"),
+            "grupocontable": item_consolidado.get("grupocontable"),
             **cp_serpi
         })
         
@@ -906,9 +1195,11 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
                     autor = cp_serpi.get("autor") or "No especificado"
                     editorial = cp_serpi.get("editorial") or "No especificado"
                     paginas = cp_serpi.get("paginas") or "N/A"
+                    grupo_nombre = resolver_grupo_contable_articulo(item_consolidado)
+                    es_tax = determinar_taxable_desde_fila(item_consolidado)
                     st.write(f"**Autor:** {autor}")
                     st.write(f"**Editorial:** {editorial}")
-                    st.write(f"**Páginas:** {paginas}")
+                    st.write(f"**Grupo Contable:** {grupo_nombre} ({'✅ Cobra IVA' if es_tax else '❌ Exento de IVA'})")
             
             st.write("")
             if st.button("✨ Dar de Alta y Crear Producto en Shopify", type="primary", use_container_width=True, key="btn_create_modal"):
@@ -958,6 +1249,7 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
                     node {
                       price
                       inventoryQuantity
+                      taxable
                     }
                   }
                 }
@@ -978,6 +1270,7 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
             
             stock_sp = var_sp.get("inventoryQuantity", 0)
             precio_sp = var_sp.get("price", "0.00")
+            taxable_sp = var_sp.get("taxable", False)
             meta_sp_dict = {edge["node"]["key"]: edge["node"]["value"] for edge in prod_sp.get("metafields", {}).get("edges", [])}
 
             st.success(f"🔗 Vinculado a producto en Shopify vía: **{match_origen}**")
@@ -985,7 +1278,7 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
             col_comp1, col_comp2 = st.columns(2)
             with col_comp1:
                 with st.container(border=True):
-                    st.markdown("##### 📦 Existencias y Precios")
+                    st.markdown("##### 📦 Existencias, Precios e Impuestos")
                     cambios_list = []
                     if nuevo_stock is not None:
                         cambios_list.append({
@@ -1001,6 +1294,15 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
                             "SERPI": f"${nuevo_precio:,.0f}",
                             "Impacto": "🔄 Cambia" if str(precio_sp) != str(nuevo_precio) else "✅ Al día"
                         })
+                    
+                    taxable_nuevo = determinar_taxable_desde_fila(fila_virtual)
+                    grupo_serpi = resolver_grupo_contable_articulo(fila_virtual)
+                    cambios_list.append({
+                        "Atributo": "Impuestos (IVA)",
+                        "Shopify": "✅ Cobra IVA (19%)" if taxable_sp else "❌ Exento de IVA",
+                        "SERPI": f"{'✅ Cobra IVA' if taxable_nuevo else '❌ Exento'} ({grupo_serpi})",
+                        "Impacto": "🔄 Cambia" if taxable_sp != taxable_nuevo else "✅ Al día"
+                    })
                     st.dataframe(pd.DataFrame(cambios_list), hide_index=True, use_container_width=True)
 
             with col_comp2:
@@ -1054,39 +1356,27 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
 # 6. Interfaz Principal Streamlit
 # -------------------------------------------------------------
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/2897/2897818.png", width=50)
-    st.title("Conexión & Estado")
+    st.image("https://cdn-icons-png.flaticon.com/512/2897/2897818.png", width=44)
+    st.markdown("### **Panel de Control**")
+    st.caption("Estado de integración de servicios")
     
     if API_TOKEN and RAW_SHOP_URL:
         st.success(f"**Shopify Conectado**\n\n`{RAW_SHOP_URL}`")
     else:
-        st.error("**Shopify Desconectado**\n\nVerifica las credenciales en el archivo `.env`")
+        st.error("**Shopify Desconectado**\n\nVerifica las credenciales en `.env`")
     
-    canales_activos, scopes_activos = verificar_permisos_canales_shopify()
-    if canales_activos:
-        st.success("**Canales de Venta Conectados**\n\n`Tienda Online, POS, Redes, Apps`")
-    else:
-        with st.container(border=True):
-            st.warning("⚠️ **Canales Externos Pendientes**")
-            st.caption(
-                "Para que Shopify publique en **Facebook, Google, TikTok y POS**, activa estos permisos en tu App de Shopify:\n\n"
-                "1. En Shopify Admin ve a **Apps > Desarrollar apps > [Tu App] > Configuración**.\n"
-                "2. Marca los permisos: **`read_publications`** y **`write_publications`**.\n"
-                "3. Guarda los cambios."
-            )
-
     st.write("")
     
     serpi_key = SERPI_HEADERS.get("secretkey")
     serpi_token = SERPI_HEADERS.get("Authorization", "").replace("Bearer ", "").strip()
     
     if serpi_key and serpi_token:
-        st.success(f"**SERPI Conectado**\n\n`{SERPI_BASE_URL}`")
+        st.success(f"**SERPI ERP Conectado**\n\n`{SERPI_BASE_URL}`")
     else:
-        st.error("**SERPI Desconectado**\n\nFalta SecretKey o Token en el archivo `.env`")
+        st.error("**SERPI Desconectado**\n\nFalta SecretKey o Token en `.env`")
 
-st.title("📦 Centro de Sincronización SERPI ➔ Shopify")
-st.caption("Automatización y auditoría de inventarios, precios y catálogo en tiempo real.")
+st.markdown("## 📦 Centro de Sincronización SERPI ➔ Shopify")
+st.markdown("<p style='color: #9AA0A6; margin-top: -8px; margin-bottom: 20px; font-size: 14px;'>Automatización y auditoría de inventarios, precios y catálogo multicanal en tiempo real.</p>", unsafe_allow_html=True)
 
 tab_unificado, tab_excel, tab_portadas = st.tabs([
     "⚡ Sincronización Automática", 
@@ -1102,15 +1392,15 @@ with tab_unificado:
     cant_procesados = len(st.session_state["productos_procesados_ids"])
 
     with st.container(border=True):
-        col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns([2, 2, 2, 1])
+        col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns([2, 2.2, 2.2, 1])
         with col_ctrl1:
             rango_unificado = st.pills("Ventana ERP", [24, 48, 72], format_func=lambda x: f"Últimas {x}h", default=24, key="rango_unificado")
         with col_ctrl2:
             st.write("")
-            btn_fast_sync = st.button("⚡ Auditoría Rápida (Nuevos/Modificados)", type="primary", use_container_width=True, key="btn_fast_sync")
+            btn_fast_sync = st.button("⚡ Auditoría Rápida", type="primary", use_container_width=True, key="btn_fast_sync")
         with col_ctrl3:
             st.write("")
-            btn_full_snapshot = st.button("📦 Reconstruir Control Global (40k)", use_container_width=True, key="btn_full_snapshot")
+            btn_full_snapshot = st.button("📦 Control Global (40k)", type="secondary", use_container_width=True, key="btn_full_snapshot")
         with col_ctrl4:
             st.write("")
             if cant_procesados > 0:
@@ -1134,6 +1424,8 @@ with tab_unificado:
                     mapa_novedades[cod] = {
                         "codigo": cod,
                         "descripcion": art.get("descripcion", ""),
+                        "idgrupocontable": art.get("idgrupocontable"),
+                        "grupocontable": resolver_grupo_contable_articulo(art),
                         "camposPersonalizados": art.get("camposPersonalizados", {}) or {},
                         "saldo": stock_snap,
                         "precio": precio_snap,
@@ -1199,25 +1491,25 @@ with tab_unificado:
 
         with kpi_col1:
             is_active = st.session_state["filtro_kpi_activo"] == "TODOS"
-            if st.button(f"📦 Total Novedades\n### {total_art}", type="primary" if is_active else "secondary", use_container_width=True, key="btn_kpi_todos"):
+            if st.button(f"📦 Total Novedades ({total_art})", type="primary" if is_active else "secondary", use_container_width=True, key="btn_kpi_todos"):
                 st.session_state["filtro_kpi_activo"] = "TODOS"
                 st.rerun()
 
         with kpi_col2:
             is_active = st.session_state["filtro_kpi_activo"] == "STOCK"
-            if st.button(f"🔄 Con Cambio Stock\n### {con_stock}", type="primary" if is_active else "secondary", use_container_width=True, key="btn_kpi_stock"):
+            if st.button(f"🔄 Con Cambio Stock ({con_stock})", type="primary" if is_active else "secondary", use_container_width=True, key="btn_kpi_stock"):
                 st.session_state["filtro_kpi_activo"] = "STOCK"
                 st.rerun()
 
         with kpi_col3:
             is_active = st.session_state["filtro_kpi_activo"] == "PRECIO"
-            if st.button(f"💰 Con Cambio Precio\n### {con_precio}", type="primary" if is_active else "secondary", use_container_width=True, key="btn_kpi_precio"):
+            if st.button(f"💰 Con Cambio Precio ({con_precio})", type="primary" if is_active else "secondary", use_container_width=True, key="btn_kpi_precio"):
                 st.session_state["filtro_kpi_activo"] = "PRECIO"
                 st.rerun()
 
         with kpi_col4:
             is_active = st.session_state["filtro_kpi_activo"] == "PENDIENTES"
-            if st.button(f"⏳ Pendientes por Aplicar\n### {pendientes_count}", type="primary" if is_active else "secondary", use_container_width=True, key="btn_kpi_pendientes"):
+            if st.button(f"⏳ Pendientes ({pendientes_count})", type="primary" if is_active else "secondary", use_container_width=True, key="btn_kpi_pendientes"):
                 st.session_state["filtro_kpi_activo"] = "PENDIENTES"
                 st.rerun()
 
@@ -1300,11 +1592,13 @@ with tab_unificado:
             cod = str(p.get("codigo")).strip()
             ya_listo = esta_procesado(cod)
             cp = p.get("camposPersonalizados", {}) or {}
+            grupo_nom = p.get("grupocontable") or resolver_grupo_contable_articulo(p)
             
             resumen_tabla.append({
                 "Estado": "✅ PROCESADO" if ya_listo else "⏳ PENDIENTE",
                 "Código SKU": cod,
                 "Título del Libro": p.get("descripcion"),
+                "Grupo Contable": grupo_nom,
                 "Motivo / Variación": p.get("motivo", "—"),
                 "Stock SERPI": f"{int(float(p.get('saldo')))}" if p.get("saldo") is not None else "—",
                 "Precio SERPI": f"${p.get('precio'):,.0f}" if p.get("precio") is not None else "—",
@@ -1323,6 +1617,7 @@ with tab_unificado:
                     "Estado": st.column_config.TextColumn("Estado", width="small"),
                     "Código SKU": st.column_config.TextColumn("Código SKU", width="small"),
                     "Título del Libro": st.column_config.TextColumn("Título del Libro", width="medium"),
+                    "Grupo Contable": st.column_config.TextColumn("Grupo Contable", width="small"),
                     "Motivo / Variación": st.column_config.TextColumn("Motivo / Variación", width="medium")
                 }
             )
@@ -1351,6 +1646,8 @@ with tab_unificado:
                             cp_serpi = item.get("camposPersonalizados", {}) or {}
                             stk_serpi = item.get("saldo")
                             prc_serpi = item.get("precio")
+                            id_gc = item.get("idgrupocontable")
+                            nom_gc = item.get("grupocontable") or resolver_grupo_contable_articulo(item)
                             
                             if stk_serpi is None:
                                 stk_serpi = obtener_stock_puntual_serpi(cod_serpi)
@@ -1358,7 +1655,14 @@ with tab_unificado:
                                 prc_serpi = obtener_precio_puntual_serpi(cod_serpi)
                             
                             status.text(f"[{idx+1}/{total_p}] Sincronizando: {tit_serpi[:30]}...")
-                            fila_v = pd.Series({"serpi": cod_serpi, "descripcion": tit_serpi, "price": prc_serpi, **cp_serpi})
+                            fila_v = pd.Series({
+                                "serpi": cod_serpi, 
+                                "descripcion": tit_serpi, 
+                                "price": prc_serpi, 
+                                "idgrupocontable": id_gc,
+                                "grupocontable": nom_gc,
+                                **cp_serpi
+                            })
                             
                             p_id, _ = obtener_product_id(fila_v)
                             if p_id:

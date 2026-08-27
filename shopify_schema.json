@@ -70,7 +70,17 @@
                 "Taxable",
                 "Impuestos",
                 "Impuesto",
-                "Aplica Impuesto"
+                "Aplica Impuesto",
+                "idgrupocontable",
+                "id_grupocontable",
+                "grupocontable",
+                "Grupo Contable",
+                "grupo_contable",
+                "linea",
+                "Linea",
+                "LINEA",
+                "idlinea",
+                "id_linea"
             ]
         },
         "inventoryQuantity": {
