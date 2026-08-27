@@ -484,6 +484,362 @@ def ejecutar_graphql(query, variables=None):
     else:
         raise Exception(f"HTTP {response.status_code}: {response.text}")
 
+def consultar_articulos_completos_serpi():
+    """Consulta la totalidad de artículos y fichas técnicas de SERPI con paginación máxima."""
+    return consultar_todos_los_registros_serpi("/api/v1/Articulo", tamano_pagina=1000, max_paginas=60)
+
+def enriquecer_snapshot_serpi_completo(status_callback=None):
+    """
+    Descarga todo el catálogo de SERPI: Fichas (/api/v1/Articulo), 
+    Saldos (/api/v1/SaldoInventarioSinCosto) y Precios (/api/v1/ListaPrecios),
+    y actualiza el archivo de control local 'control_snapshot.json' con todos los atributos.
+    """
+    if status_callback: status_callback("Paginando existencias de inventario en SERPI...")
+    saldos_raw = consultar_inventario_completo()
+    
+    if status_callback: status_callback("Paginando lista de precios en SERPI...")
+    precios_raw = consultar_precios_completos()
+    
+    if status_callback: status_callback("Paginando catálogo y fichas técnicas de SERPI (40k ítems)...")
+    articulos_raw = consultar_articulos_completos_serpi()
+    
+    snapshot = cargar_snapshot_control()
+    
+    # 1. Mapeo de existencias
+    saldos_map = {}
+    for item in saldos_raw:
+        cod = str(item.get("codigo", "")).strip()
+        if cod:
+            saldos_map[cod] = saldos_map.get(cod, 0) + int(float(item.get("saldo", 0) or 0))
+            
+    # 2. Mapeo de precios (priorizando LISTA PP / id_listaprecio == 1)
+    precios_map = {}
+    for item in precios_raw:
+        cod = str(item.get("codigo") or item.get("id_articulo", "")).strip()
+        if cod:
+            p_val = float(item.get("precio", 0) or 0)
+            if p_val > 0:
+                if cod not in precios_map or precios_map[cod] == 0 or item.get("id_listaprecio") == 1:
+                    precios_map[cod] = p_val
+
+    # 3. Consolidar con la ficha técnica completa
+    for art in articulos_raw:
+        cod = str(art.get("codigo", "")).strip()
+        if not cod:
+            continue
+        cp = art.get("camposPersonalizados", {}) or {}
+        stk = saldos_map.get(cod, snapshot.get(cod, {}).get("stock", 0))
+        prc = precios_map.get(cod, snapshot.get(cod, {}).get("precio", 0.0))
+        
+        snapshot[cod] = {
+            "codigo": cod,
+            "descripcion": art.get("descripcion", ""),
+            "idgrupocontable": art.get("idgrupocontable"),
+            "grupocontable": resolver_grupo_contable_articulo(art),
+            "idlinea": art.get("idlinea"),
+            "activo": art.get("activo", True),
+            "autor": cp.get("autor", "") or "",
+            "editorial": cp.get("editorial", "") or "",
+            "presentacion": cp.get("presentacion", "") or "",
+            "estado": cp.get("estado", "") or "",
+            "paginas": cp.get("paginas", "") or "",
+            "categoria": cp.get("categoria", "") or "",
+            "camposPersonalizados": cp,
+            "stock": stk,
+            "precio": prc,
+            "ultima_actualizacion": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+    # Asegurar que los que estaban en saldos o precios pero no vinieron en artículos también queden
+    for cod, stk in saldos_map.items():
+        if cod not in snapshot:
+            snapshot[cod] = {"stock": stk, "precio": precios_map.get(cod, 0.0)}
+        else:
+            snapshot[cod]["stock"] = stk
+            
+    for cod, prc in precios_map.items():
+        if cod not in snapshot:
+            snapshot[cod] = {"stock": 0, "precio": prc}
+        else:
+            snapshot[cod]["precio"] = prc
+
+    guardar_snapshot_control(snapshot)
+    return snapshot
+
+def descargar_catalogo_completo_shopify_bulk(status_callback=None, forzar_nueva_extraccion=False):
+    """
+    Ejecuta una consulta masiva por GraphQL Bulk Operation en Shopify.
+    Descarga los 29.125 productos con sus variantes y metacampos en ~30 segundos.
+    Retorna (productos_por_sku, total_productos, lista_sin_sku).
+    """
+    status_q = """
+    query {
+      currentBulkOperation {
+        id
+        status
+        errorCode
+        objectCount
+        url
+      }
+    }
+    """
+    
+    # 1. Verificar si hay una operación activa o completada recientemente
+    res_status = ejecutar_graphql(status_q)
+    curr = res_status.get("data", {}).get("currentBulkOperation")
+    
+    download_url = None
+    if not forzar_nueva_extraccion and curr and curr.get("status") == "COMPLETED" and curr.get("url"):
+        download_url = curr.get("url")
+        if status_callback: status_callback("Encontrada extracción previa completada. Descargando datos...")
+    elif curr and curr.get("status") == "RUNNING":
+        if status_callback: status_callback(f"Extracción en curso en servidores de Shopify ({curr.get('objectCount', 0)} objetos)...")
+    else:
+        mutation_bulk = """
+        mutation {
+          bulkOperationRunQuery(
+            query: \"\"\"
+            {
+              products {
+                edges {
+                  node {
+                    id
+                    title
+                    status
+                    descriptionHtml
+                    variants {
+                      edges {
+                        node {
+                          id
+                          sku
+                          price
+                          inventoryQuantity
+                          taxable
+                        }
+                      }
+                    }
+                    metafields {
+                      edges {
+                        node {
+                          namespace
+                          key
+                          value
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            \"\"\"
+          ) {
+            bulkOperation {
+              id
+              status
+            }
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+        """
+        res_launch = ejecutar_graphql(mutation_bulk)
+        errs = res_launch.get("data", {}).get("bulkOperationRunQuery", {}).get("userErrors", [])
+        if errs:
+            raise Exception(f"Error iniciando Bulk Operation en Shopify: {errs}")
+        if status_callback: status_callback("Extracción masiva iniciada en servidores de Shopify...")
+
+    # 2. Esperar a que complete si aún no tenemos URL
+    if not download_url:
+        max_wait = 180
+        start_time = time.time()
+        while time.time() - start_time < max_wait:
+            time.sleep(3)
+            s = ejecutar_graphql(status_q).get("data", {}).get("currentBulkOperation", {})
+            st_op = s.get("status")
+            objs = s.get("objectCount", 0)
+            if status_callback: status_callback(f"Procesando en Shopify: {objs} objetos ({st_op})...")
+            if st_op == "COMPLETED":
+                download_url = s.get("url")
+                break
+            elif st_op in ["FAILED", "CANCELED"]:
+                raise Exception(f"La operación masiva en Shopify falló con estado: {st_op}")
+
+    if not download_url:
+        raise Exception("Tiempo de espera agotado esperando la extracción de Shopify.")
+
+    # 3. Descargar y parsear el archivo JSONL en memoria
+    if status_callback: status_callback("Descargando e indexando catálogo de Shopify en memoria...")
+    res_dl = requests.get(download_url, stream=True, timeout=90)
+    
+    productos_por_id = {}
+    for line in res_dl.iter_lines():
+        if not line:
+            continue
+        item = json.loads(line.decode('utf-8'))
+        item_id = item.get("id", "")
+        
+        if "ProductVariant" in item_id:
+            p_id = item.get("__parentId")
+            if p_id in productos_por_id:
+                productos_por_id[p_id]["variant"] = item
+                sku = str(item.get("sku") or "").strip()
+                if sku:
+                    productos_por_id[p_id]["sku"] = sku
+        elif item.get("namespace") == "custom":
+            p_id = item.get("__parentId")
+            if p_id in productos_por_id:
+                k = item.get("key")
+                v = item.get("value")
+                productos_por_id[p_id]["metafields"][k] = v
+                if k == "serpi" and v:
+                    productos_por_id[p_id]["serpi"] = str(v).strip()
+        elif "Product" in item_id:
+            productos_por_id[item_id] = {
+                "id": item_id,
+                "title": item.get("title", ""),
+                "status": item.get("status", ""),
+                "descriptionHtml": item.get("descriptionHtml", ""),
+                "variant": None,
+                "metafields": {},
+                "sku": None,
+                "serpi": None
+            }
+
+    productos_por_sku = {}
+    sin_sku = []
+    for p_id, p_data in productos_por_id.items():
+        cod = p_data.get("sku") or p_data.get("serpi")
+        if cod:
+            productos_por_sku[str(cod).strip()] = p_data
+        else:
+            sin_sku.append(p_data)
+
+    return productos_por_sku, len(productos_por_id), sin_sku
+
+def comparar_serpi_vs_shopify(snapshot_serpi, productos_shopify):
+    """
+    Compara SKU por SKU el catálogo de Shopify vs el archivo de control SERPI.
+    Retorna métricas y lista de discrepancias detalladas.
+    """
+    total_shopify = len(productos_shopify)
+    identicos = []
+    desfasados = []
+    sin_sku_o_no_serpi = []
+    
+    cnt_diff_stock = 0
+    cnt_diff_precio = 0
+    cnt_diff_iva = 0
+    cnt_diff_ficha = 0
+
+    for sku, p_data in productos_shopify.items():
+        sku_limpio = str(sku).strip()
+        if not sku_limpio or sku_limpio not in snapshot_serpi:
+            sin_sku_o_no_serpi.append(p_data)
+            continue
+            
+        serpi_item = snapshot_serpi[sku_limpio]
+        
+        # 1. Stock
+        sp_stock = int(p_data.get("variant", {}).get("inventoryQuantity") or 0) if p_data.get("variant") else 0
+        erp_stock = int(float(serpi_item.get("stock") or 0))
+        diff_stock = (sp_stock != erp_stock)
+        
+        # 2. Precio
+        sp_price = float(p_data.get("variant", {}).get("price") or 0) if p_data.get("variant") else 0.0
+        erp_price = float(serpi_item.get("precio") or 0)
+        diff_precio = (erp_price > 0 and abs(sp_price - erp_price) >= 1.0)
+        
+        # 3. IVA / Taxable
+        sp_taxable = bool(p_data.get("variant", {}).get("taxable", False)) if p_data.get("variant") else False
+        erp_taxable = determinar_taxable_desde_fila(serpi_item)
+        diff_iva = (sp_taxable != erp_taxable)
+        
+        # 4. Ficha / Metafield
+        sp_meta = p_data.get("metafields", {})
+        cp_serpi = serpi_item.get("camposPersonalizados", {}) or {}
+        
+        erp_autor = str(serpi_item.get("autor") or cp_serpi.get("autor") or "").strip()
+        sp_autor = str(sp_meta.get("autor") or "").strip()
+        diff_autor = bool(erp_autor and sp_autor and erp_autor.lower() != sp_autor.lower())
+        
+        erp_editorial = str(serpi_item.get("editorial") or cp_serpi.get("editorial") or "").strip()
+        sp_editorial = str(sp_meta.get("editorial") or "").strip()
+        diff_editorial = bool(erp_editorial and sp_editorial and erp_editorial.lower() != sp_editorial.lower())
+        
+        erp_pres = str(serpi_item.get("presentacion") or cp_serpi.get("presentacion") or "").strip()
+        sp_pres = str(sp_meta.get("presentacion") or "").strip()
+        diff_pres = bool(erp_pres and sp_pres and erp_pres.lower() != sp_pres.lower())
+        
+        erp_estado = str(serpi_item.get("estado") or cp_serpi.get("estado") or "").strip()
+        sp_estado = str(sp_meta.get("estado") or "").strip()
+        diff_estado = bool(erp_estado and sp_estado and erp_estado.lower() != sp_estado.lower())
+        
+        diff_ficha = (diff_autor or diff_editorial or diff_pres or diff_estado)
+        
+        if diff_stock or diff_precio or diff_iva or diff_ficha:
+            tipos = []
+            detalles = []
+            if diff_stock:
+                tipos.append("📦 Stock")
+                detalles.append(f"Stock: Shopify={sp_stock} | SERPI={erp_stock}")
+                cnt_diff_stock += 1
+            if diff_precio:
+                tipos.append("💰 Precio")
+                detalles.append(f"Precio: Shopify=${sp_price:,.0f} | SERPI=${erp_price:,.0f}")
+                cnt_diff_precio += 1
+            if diff_iva:
+                tipos.append("⚖️ IVA")
+                grupo_nom = serpi_item.get("grupocontable") or resolver_grupo_contable_articulo(serpi_item)
+                detalles.append(f"IVA: Shopify={'Sí' if sp_taxable else 'No'} | SERPI={'Sí' if erp_taxable else 'No'} ({grupo_nom})")
+                cnt_diff_iva += 1
+            if diff_ficha:
+                tipos.append("📝 Ficha")
+                f_det = []
+                if diff_autor: f_det.append(f"Autor ('{sp_autor}' vs '{erp_autor}')")
+                if diff_editorial: f_det.append(f"Editorial ('{sp_editorial}' vs '{erp_editorial}')")
+                if diff_pres: f_det.append(f"Presentación ('{sp_pres}' vs '{erp_pres}')")
+                if diff_estado: f_det.append(f"Estado ('{sp_estado}' vs '{erp_estado}')")
+                detalles.append("Ficha: " + ", ".join(f_det))
+                cnt_diff_ficha += 1
+                
+            desfasados.append({
+                "SKU": sku_limpio,
+                "Título": p_data.get("title") or serpi_item.get("descripcion", ""),
+                "Tipos": ", ".join(tipos),
+                "Detalle de Discrepancias": "  •  ".join(detalles),
+                "Stock Shopify": sp_stock,
+                "Stock SERPI": erp_stock,
+                "Precio Shopify": f"${sp_price:,.0f}",
+                "Precio SERPI": f"${erp_price:,.0f}",
+                "IVA Shopify": "Sí (19%)" if sp_taxable else "No (Exento)",
+                "IVA SERPI": f"{'Sí' if erp_taxable else 'No'} ({serpi_item.get('grupocontable') or 'Librería'})",
+                "_product_id": p_data["id"],
+                "_variant_id": p_data.get("variant", {}).get("id") if p_data.get("variant") else None,
+                "_erp_stock": erp_stock,
+                "_erp_price": erp_price,
+                "_serpi_item": serpi_item,
+                "_diff_stock": diff_stock,
+                "_diff_precio": diff_precio,
+                "_diff_iva": diff_iva,
+                "_diff_ficha": diff_ficha
+            })
+        else:
+            identicos.append(sku_limpio)
+            
+    resumen = {
+        "total_shopify": total_shopify,
+        "total_identicos": len(identicos),
+        "total_desfasados": len(desfasados),
+        "total_sin_serpi": len(sin_sku_o_no_serpi),
+        "cnt_diff_stock": cnt_diff_stock,
+        "cnt_diff_precio": cnt_diff_precio,
+        "cnt_diff_iva": cnt_diff_iva,
+        "cnt_diff_ficha": cnt_diff_ficha
+    }
+    return desfasados, identicos, sin_sku_o_no_serpi, resumen
+
 def obtener_valor_fila(row, lista_columnas_posibles):
     if isinstance(row, dict):
         keys_map = {str(k).strip().lower(): k for k in row.keys()}
@@ -1378,8 +1734,9 @@ with st.sidebar:
 st.markdown("## 📦 Centro de Sincronización SERPI ➔ Shopify")
 st.markdown("<p style='color: #9AA0A6; margin-top: -8px; margin-bottom: 20px; font-size: 14px;'>Automatización y auditoría de inventarios, precios y catálogo multicanal en tiempo real.</p>", unsafe_allow_html=True)
 
-tab_unificado, tab_excel, tab_portadas = st.tabs([
-    "⚡ Sincronización Automática", 
+tab_unificado, tab_reconciliacion, tab_excel, tab_portadas = st.tabs([
+    "⚡ Sincronización Rápida", 
+    "🔄 Reconciliación Global (29k)",
     "📄 Carga Manual (Excel/CSV)",
     "🖼️ Galería de Portadas"
 ])
@@ -1683,7 +2040,259 @@ with tab_unificado:
                         st.rerun()
 
 # =============================================================
-# PESTAÑA 2: CARGA MANUAL VÍA EXCEL/CSV
+# PESTAÑA 2: RECONCILIACIÓN GLOBAL DE CATÁLOGO (SERPI vs SHOPIFY 29K)
+# =============================================================
+with tab_reconciliacion:
+    st.markdown("### 🔄 Reconciliación Global de Catálogo (SERPI vs Shopify)")
+    st.markdown(
+        "<p style='color: #9AA0A6; margin-top: -8px; font-size: 14px;'>"
+        "Auditoría masiva de los 29.125 productos de Shopify contra el ERP SERPI. "
+        "Permite detectar y sincronizar discrepancias de Stock, Precios, IVA (según Grupo Contable) y Ficha Técnica."
+        "</p>", 
+        unsafe_allow_html=True
+    )
+    
+    with st.container(border=True):
+        st.markdown("#### ⚙️ Parámetros de Extracción y Auditoría")
+        col_rec_cfg1, col_rec_cfg2 = st.columns([3, 2])
+        with col_rec_cfg1:
+            chk_enriquecer_serpi = st.checkbox(
+                "📥 Descargar y actualizar catálogo completo de SERPI (40.000 fichas)",
+                value=False,
+                help="Descarga las 40k fichas técnicas completas con autor, editorial, presentación, estado, existencias y precios en el archivo de control local."
+            )
+            chk_forzar_shopify = st.checkbox(
+                "⚡ Forzar nueva extracción desde servidores de Shopify",
+                value=False,
+                help="Si está desmarcado y existe una extracción reciente (< 2h), se reutiliza para máxima velocidad (~20 segundos)."
+            )
+        with col_rec_cfg2:
+            st.write("")
+            btn_iniciar_reconciliacion = st.button(
+                "🔎 Iniciar Auditoría Global (SERPI vs Shopify 29k)",
+                type="primary",
+                use_container_width=True,
+                key="btn_iniciar_reconciliacion"
+            )
+
+    # --- FLUJO DE AUDITORÍA ---
+    if btn_iniciar_reconciliacion:
+        prog_bar = st.progress(0)
+        status_rec = st.empty()
+        try:
+            # 1. SERPI
+            snapshot_serpi = cargar_snapshot_control()
+            if chk_enriquecer_serpi or not snapshot_serpi:
+                status_rec.text("Fase 1/3: Descargando y enriqueciendo catálogo de SERPI...")
+                snapshot_serpi = enriquecer_snapshot_serpi_completo(status_callback=lambda msg: status_rec.text(f"SERPI: {msg}"))
+            prog_bar.progress(35)
+            
+            # 2. SHOPIFY BULK
+            status_rec.text("Fase 2/3: Consultando los 29.125 productos de Shopify...")
+            prods_shopify, total_sp, sin_sku = descargar_catalogo_completo_shopify_bulk(
+                status_callback=lambda msg: status_rec.text(f"Shopify: {msg}"),
+                forzar_nueva_extraccion=chk_forzar_shopify
+            )
+            prog_bar.progress(75)
+            
+            # 3. COMPARAR EN MEMORIA
+            status_rec.text("Fase 3/3: Comparando discrepancias SKU por SKU en memoria...")
+            desfasados, identicos, sin_serpi, resumen = comparar_serpi_vs_shopify(snapshot_serpi, prods_shopify)
+            prog_bar.progress(100)
+            
+            st.session_state["reconciliacion_resultados"] = {
+                "desfasados": desfasados,
+                "identicos": identicos,
+                "sin_serpi": sin_serpi,
+                "resumen": resumen,
+                "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            st.session_state["filtro_reconciliacion"] = "TODOS"
+            status_rec.empty()
+            prog_bar.empty()
+            st.success(f"🎉 ¡Auditoría completada exitosamente! Se analizaron {total_sp} productos.")
+            st.rerun()
+            
+        except Exception as e:
+            status_rec.empty()
+            prog_bar.empty()
+            st.error(f"Error durante la auditoría global: {e}")
+
+    # --- RESULTADOS Y MATRIZ DE AUDITORÍA ---
+    res_rec = st.session_state.get("reconciliacion_resultados")
+    if res_rec:
+        resumen = res_rec["resumen"]
+        desfasados = res_rec["desfasados"]
+        
+        st.write("")
+        col_meta_info, col_meta_clear = st.columns([4, 1])
+        with col_meta_info:
+            st.caption(f"📅 Auditoría ejecutada el: **{res_rec.get('fecha')}**")
+        with col_meta_clear:
+            if st.button("🔄 Nueva Auditoría", type="secondary", use_container_width=True, key="btn_nueva_auditoria"):
+                st.session_state.pop("reconciliacion_resultados", None)
+                st.rerun()
+        
+        # Tarjetas de Métricas Principales
+        c_rec1, c_rec2, c_rec3, c_rec4 = st.columns(4)
+        c_rec1.metric("🏪 Total en Shopify", f"{resumen['total_shopify']:,}")
+        c_rec2.metric("✅ 100% al Día", f"{resumen['total_identicos']:,}")
+        c_rec3.metric("🔄 Desfasados (Diff)", f"{resumen['total_desfasados']:,}")
+        c_rec4.metric("⚠️ Sin Match SERPI", f"{resumen['total_sin_serpi']:,}")
+        
+        # Desglose de Tipos de Discrepancias
+        st.markdown(
+            f"<div style='background: #181C22; border-radius: 12px; padding: 12px 16px; margin: 12px 0; font-size: 13px; color: #C4C7C5; border: 1px solid #2B313A;'>"
+            f"<b>Discrepancias detectadas:</b> &nbsp;"
+            f"📦 Stock: <span style='color: #8AB4F8; font-weight: bold;'>{resumen['cnt_diff_stock']}</span> &nbsp;|&nbsp; "
+            f"💰 Precio: <span style='color: #81C995; font-weight: bold;'>{resumen['cnt_diff_precio']}</span> &nbsp;|&nbsp; "
+            f"⚖️ IVA / Grupo: <span style='color: #FDD663; font-weight: bold;'>{resumen['cnt_diff_iva']}</span> &nbsp;|&nbsp; "
+            f"📝 Ficha Técnica: <span style='color: #FF8BCB; font-weight: bold;'>{resumen['cnt_diff_ficha']}</span>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+        
+        # Filtros de visualización
+        col_fil1, col_fil2 = st.columns([3, 2])
+        with col_fil1:
+            filtro_rec = st.pills(
+                "Filtrar Discrepancias",
+                ["TODOS", "STOCK", "PRECIO", "IVA", "FICHA"],
+                format_func=lambda x: {
+                    "TODOS": f"Todos ({resumen['total_desfasados']})",
+                    "STOCK": f"📦 Stock ({resumen['cnt_diff_stock']})",
+                    "PRECIO": f"💰 Precio ({resumen['cnt_diff_precio']})",
+                    "IVA": f"⚖️ IVA ({resumen['cnt_diff_iva']})",
+                    "FICHA": f"📝 Ficha ({resumen['cnt_diff_ficha']})"
+                }.get(x, x),
+                default=st.session_state.get("filtro_reconciliacion", "TODOS"),
+                key="pills_rec_filtro"
+            )
+            st.session_state["filtro_reconciliacion"] = filtro_rec
+            
+        with col_fil2:
+            txt_buscar_rec = st.text_input("🔍 Buscar por SKU o Título", "", key="buscar_rec_input")
+            
+        items_filtrados = desfasados
+        if filtro_rec == "STOCK":
+            items_filtrados = [d for d in items_filtrados if d.get("_diff_stock")]
+        elif filtro_rec == "PRECIO":
+            items_filtrados = [d for d in items_filtrados if d.get("_diff_precio")]
+        elif filtro_rec == "IVA":
+            items_filtrados = [d for d in items_filtrados if d.get("_diff_iva")]
+        elif filtro_rec == "FICHA":
+            items_filtrados = [d for d in items_filtrados if d.get("_diff_ficha")]
+            
+        if txt_buscar_rec.strip():
+            tb = txt_buscar_rec.strip().lower()
+            items_filtrados = [d for d in items_filtrados if tb in str(d.get("SKU", "")).lower() or tb in str(d.get("Título", "")).lower()]
+            
+        cols_mostrar = [
+            "SKU", "Título", "Tipos", "Stock Shopify", "Stock SERPI", 
+            "Precio Shopify", "Precio SERPI", "IVA Shopify", "IVA SERPI", "Detalle de Discrepancias"
+        ]
+        df_rec_mostrar = pd.DataFrame(items_filtrados)
+        if not df_rec_mostrar.empty:
+            st.dataframe(
+                df_rec_mostrar[cols_mostrar],
+                width="stretch",
+                height=350,
+                hide_index=True,
+                column_config={
+                    "SKU": st.column_config.TextColumn("Código SKU", width="small"),
+                    "Título": st.column_config.TextColumn("Título", width="medium"),
+                    "Tipos": st.column_config.TextColumn("Diferencias", width="small"),
+                    "Detalle de Discrepancias": st.column_config.TextColumn("Detalle", width="large")
+                }
+            )
+        else:
+            st.info("No hay productos con los filtros seleccionados.")
+            
+        # --- FASE 2: SINCRONIZACIÓN CONTROLADA ---
+        st.write("")
+        with st.container(border=True):
+            st.markdown("#### 🚀 Fase 2: Sincronización Controlada en Shopify")
+            col_sy1, col_sy2, col_sy3 = st.columns([3, 2, 2])
+            
+            pendientes_rec = [d for d in desfasados if not esta_procesado(d["SKU"])]
+            with col_sy1:
+                tam_lote_sel = st.selectbox(
+                    "Lote a sincronizar:",
+                    ["Todo el lote de desfasados", "Bloque de 100 productos", "Bloque de 250 productos", "Bloque de 500 productos"],
+                    key="tam_lote_rec_sel"
+                )
+            with col_sy2:
+                st.write("")
+                st.caption(f"Pendientes por sincronizar: **{len(pendientes_rec)}** de {len(desfasados)}")
+            with col_sy3:
+                st.write("")
+                btn_sync_desfasados = st.button(
+                    "🚀 Sincronizar Diferencias en Shopify",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_sync_desfasados"
+                )
+                
+            if btn_sync_desfasados:
+                if not pendientes_rec:
+                    st.info("Todos los productos desfasados ya han sido procesados y sincronizados.")
+                else:
+                    limite_lote = len(pendientes_rec)
+                    if "100" in tam_lote_sel: limite_lote = min(100, len(pendientes_rec))
+                    elif "250" in tam_lote_sel: limite_lote = min(250, len(pendientes_rec))
+                    elif "500" in tam_lote_sel: limite_lote = min(500, len(pendientes_rec))
+                    
+                    lote_a_procesar = pendientes_rec[:limite_lote]
+                    total_lote = len(lote_a_procesar)
+                    
+                    prog_sync = st.progress(0)
+                    status_sync = st.empty()
+                    
+                    exitos, errores = 0, 0
+                    for idx, item in enumerate(lote_a_procesar):
+                        sku = item["SKU"]
+                        p_id = item["_product_id"]
+                        serpi_info = item["_serpi_item"]
+                        tit = item["Título"]
+                        
+                        status_sync.text(f"[{idx+1}/{total_lote}] Sincronizando: {tit[:32]}... ({sku})")
+                        
+                        try:
+                            # 1. Si difiere el stock, actualizar inventario
+                            if item["_diff_stock"]:
+                                actualizar_stock_shopify(p_id, item["_erp_stock"])
+                                
+                            # 2. Actualizar precio, sku, taxable, canales y ficha
+                            fila_update = pd.Series({
+                                "serpi": sku,
+                                "descripcion": serpi_info.get("descripcion", tit),
+                                "price": item["_erp_price"],
+                                "idgrupocontable": serpi_info.get("idgrupocontable"),
+                                "grupocontable": serpi_info.get("grupocontable"),
+                                "autor": serpi_info.get("autor", ""),
+                                "editorial": serpi_info.get("editorial", ""),
+                                "presentacion": serpi_info.get("presentacion", ""),
+                                "estado": serpi_info.get("estado", ""),
+                                **(serpi_info.get("camposPersonalizados") or {})
+                            })
+                            actualizar_producto_con_esquema(p_id, fila_update)
+                            
+                            # 3. Registrar procesado
+                            registrar_producto_procesado(sku)
+                            actualizar_sku_en_snapshot(sku, stock=item["_erp_stock"], precio=item["_erp_price"])
+                            exitos += 1
+                        except Exception as e:
+                            errores += 1
+                            
+                        time.sleep(0.05)
+                        prog_sync.progress((idx + 1) / total_lote)
+                        
+                    st.balloons()
+                    st.success(f"🎉 Sincronización finalizada: **{exitos}** productos actualizados exitosamente en Shopify. ({errores} errores)")
+                    st.rerun()
+
+# =============================================================
+# PESTAÑA 3: CARGA MANUAL VÍA EXCEL/CSV
 # =============================================================
 with tab_excel:
     st.subheader("📄 Carga y Mapeo Manual de Archivos")
