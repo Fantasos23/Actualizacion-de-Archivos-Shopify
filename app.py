@@ -1516,8 +1516,8 @@ def actualizar_producto_con_esquema(product_id, row, campos_permitidos=None):
             if v_sku is not None:
                 cod_limpio = limpiar_identificador_codigo(v_sku)
                 if cod_limpio:
-                    var_item["sku"] = cod_limpio
                     var_item["barcode"] = cod_limpio
+                    var_item["inventoryItem"] = {"sku": cod_limpio}
             if v_taxable is not None:
                 var_item["taxable"] = bool(v_taxable)
 
