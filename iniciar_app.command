@@ -10,7 +10,7 @@ echo "=================================================="
 # 2. Guardar cambios en Git y subirlos
 git add .
 git commit -m "Auto-update desde ejecutable local: $(date +'%Y-%m-%d %H:%M:%S')"
-git push origin main || git push origin master
+git push origin main
 
 echo ""
 echo "=================================================="
