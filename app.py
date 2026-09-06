@@ -206,9 +206,19 @@ base_dir = Path(__file__).parent
 load_dotenv(dotenv_path=base_dir / '.env')
 load_dotenv(dotenv_path=base_dir / 'Shopify.env')
 
-RAW_SHOP_URL = os.getenv("SHOPIFY_SHOP_URL", "").replace("https://", "").replace("http://", "").strip("/")
-API_TOKEN = os.getenv("SHOPIFY_API_TOKEN", "").strip()
-API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2026-04").strip()
+def get_secret(key, default=""):
+    """Obtiene una variable de entorno de st.secrets (Nube) o de .env / os.environ (Local)."""
+    try:
+        if hasattr(st, "secrets") and key in st.secrets:
+            return str(st.secrets[key]).strip()
+    except Exception:
+        pass
+    val = os.getenv(key, default)
+    return str(val).strip() if val is not None else str(default).strip()
+
+RAW_SHOP_URL = get_secret("SHOPIFY_SHOP_URL", "").replace("https://", "").replace("http://", "").strip("/")
+API_TOKEN = get_secret("SHOPIFY_API_TOKEN", "")
+API_VERSION = get_secret("SHOPIFY_API_VERSION", "2026-04")
 
 GRAPHQL_URL = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}/graphql.json"
 HEADERS = {
@@ -216,10 +226,10 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-SERPI_BASE_URL = os.getenv("SERPI_BASE_URL", "https://apis.serpi.com.co").rstrip("/")
+SERPI_BASE_URL = get_secret("SERPI_BASE_URL", "https://apis.serpi.com.co").rstrip("/")
 SERPI_HEADERS = {
-    "secretkey": os.getenv("SERPI_SECRETKEY", "").strip(),
-    "Authorization": f"Bearer {os.getenv('SERPI_TOKEN', '').strip()}",
+    "secretkey": get_secret("SERPI_SECRETKEY", ""),
+    "Authorization": f"Bearer {get_secret('SERPI_TOKEN', '')}",
     "Accept": "application/json"
 }
 
