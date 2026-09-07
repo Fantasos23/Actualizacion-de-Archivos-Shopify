@@ -292,9 +292,10 @@ if SCHEMA_PATH.exists():
 # 2. Funciones de Consulta API SERPI
 # -------------------------------------------------------------
 def consultar_serpi_api(endpoint, params=None):
-    url = f"{SERPI_BASE_URL}{endpoint}"
+    base_url, headers = obtener_serpi_config()
+    url = f"{base_url}{endpoint}"
     try:
-        res = requests.get(url, headers=SERPI_HEADERS, params=params, timeout=45)
+        res = requests.get(url, headers=headers, params=params, timeout=45)
         if res.status_code == 200:
             return res.json().get("result", [])
     except Exception as e:
@@ -1209,14 +1210,17 @@ def actualizar_stock_shopify(product_id, nueva_cantidad):
     2. Conecta y fija las existencias en la sucursal activa de Shopify sin errores de permisos.
     """
     try:
+        raw_url, token, version, gql_url, hdrs = obtener_shopify_config()
+        if not raw_url or not token:
+            return [{"field": ["auth"], "message": "Credenciales de Shopify no configuradas."}]
         prod_numeric_id = str(product_id).split("/")[-1]
-        rest_url = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}"
+        rest_url = f"https://{raw_url}/admin/api/{version}"
         cantidad_int = int(float(nueva_cantidad or 0))
 
         # 1. Consultar el producto por REST para obtener variante e inventory_item_id
-        r_prod = requests.get(f"{rest_url}/products/{prod_numeric_id}.json", headers=HEADERS, timeout=15)
+        r_prod = requests.get(f"{rest_url}/products/{prod_numeric_id}.json", headers=hdrs, timeout=15)
         if r_prod.status_code != 200:
-            return [{"field": ["product"], "message": f"Error consultando producto: {r_prod.text[:100]}"}]
+            return [{"field": ["product"], "message": f"Error consultando producto ({r_prod.status_code}): {r_prod.text[:100]}"}]
 
         prod_data = r_prod.json().get("product") or {}
         variants = prod_data.get("variants", [])
@@ -1233,13 +1237,13 @@ def actualizar_stock_shopify(product_id, nueva_cantidad):
         # 2. ACTIVAR SEGUIMIENTO DE INVENTARIO
         requests.put(
             f"{rest_url}/inventory_items/{inv_item_id}.json",
-            headers=HEADERS,
+            headers=hdrs,
             json={"inventory_item": {"id": int(inv_item_id), "tracked": True}},
             timeout=15
         )
         requests.put(
             f"{rest_url}/variants/{variant_id}.json",
-            headers=HEADERS,
+            headers=hdrs,
             json={"variant": {"id": int(variant_id), "inventory_management": "shopify"}},
             timeout=15
         )
@@ -1253,7 +1257,7 @@ def actualizar_stock_shopify(product_id, nueva_cantidad):
         try:
             requests.post(
                 f"{rest_url}/inventory_levels/connect.json",
-                headers=HEADERS,
+                headers=hdrs,
                 json={
                     "location_id": int(loc_id_num),
                     "inventory_item_id": int(inv_item_id)
@@ -1266,7 +1270,7 @@ def actualizar_stock_shopify(product_id, nueva_cantidad):
         # 5. Fijar el stock exacto disponible por REST
         r_set = requests.post(
             f"{rest_url}/inventory_levels/set.json",
-            headers=HEADERS,
+            headers=hdrs,
             json={
                 "location_id": int(loc_id_num),
                 "inventory_item_id": int(inv_item_id),
@@ -1397,7 +1401,8 @@ def crear_producto_en_shopify(item_serpi):
         # --- PASO 2: Asignar SKU, Precio, Taxable y Seguimiento por REST ---
         if v_edges and new_product_id:
             variant_numeric_id = v_edges[0]["node"]["id"].split("/")[-1]
-            rest_url = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}"
+            raw_url, token, version, gql_url, hdrs = obtener_shopify_config()
+            rest_url = f"https://{raw_url}/admin/api/{version}"
             es_taxable = determinar_taxable_desde_fila(item_serpi)
             
             payload_variant = {
@@ -1411,7 +1416,7 @@ def crear_producto_en_shopify(item_serpi):
             }
             requests.put(
                 f"{rest_url}/variants/{variant_numeric_id}.json",
-                headers=HEADERS,
+                headers=hdrs,
                 json=payload_variant,
                 timeout=15
             )
@@ -1643,13 +1648,14 @@ def publicar_producto_en_canales(product_id):
     try:
         prod_numeric_id = str(product_id).split("/")[-1]
         prod_gid = product_id if str(product_id).startswith("gid://") else f"gid://shopify/Product/{product_id}"
-        rest_url = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}"
+        raw_url, token, version, gql_url, hdrs = obtener_shopify_config()
+        rest_url = f"https://{raw_url}/admin/api/{version}"
 
         # 1. Asegurar estado activo y publicación global vía REST (Online Store)
         try:
             requests.put(
                 f"{rest_url}/products/{prod_numeric_id}.json",
-                headers=HEADERS,
+                headers=hdrs,
                 json={
                     "product": {
                         "id": int(prod_numeric_id),
@@ -1918,6 +1924,14 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
                     if not errs_totales:
                         registrar_producto_procesado(codigo_serpi)
                         actualizar_sku_en_snapshot(codigo_serpi, stock=nuevo_stock, precio=nuevo_precio)
+                        st.session_state.pop("shopify_catalogo_cache", None)
+                        if "cache_unificado" in st.session_state and st.session_state["cache_unificado"]:
+                            for item_c in st.session_state["cache_unificado"]:
+                                if item_c.get("codigo") == codigo_serpi:
+                                    item_c["motivo"] = "✅ 100% Al día"
+                                    item_c["detalles"] = "Sincronizado exitosamente con Shopify"
+                                    item_c["saldo"] = nuevo_stock
+                                    item_c["precio"] = nuevo_precio
                         st.balloons()
                         st.success(f"🎉 ¡Producto '{prod_sp.get('title')}' actualizado con éxito!")
                     else:
@@ -2347,20 +2361,34 @@ with tab_unificado:
                             
                             p_id = item.get("_product_id") or obtener_product_id(fila_v)[0]
                             if p_id:
+                                errs_item = []
                                 if stk_serpi is not None:
-                                    actualizar_stock_shopify(p_id, stk_serpi)
-                                actualizar_producto_con_esquema(p_id, fila_v)
-                                registrar_producto_procesado(cod_serpi)
-                                actualizar_sku_en_snapshot(cod_serpi, stock=stk_serpi, precio=prc_serpi)
-                                exitos += 1
+                                    err_st = actualizar_stock_shopify(p_id, stk_serpi)
+                                    if err_st:
+                                        errs_item.extend(err_st)
+                                err_sch = actualizar_producto_con_esquema(p_id, fila_v)
+                                if err_sch:
+                                    errs_item.extend(err_sch)
+                                
+                                if not errs_item:
+                                    registrar_producto_procesado(cod_serpi)
+                                    actualizar_sku_en_snapshot(cod_serpi, stock=stk_serpi, precio=prc_serpi)
+                                    item["motivo"] = "✅ 100% Al día"
+                                    item["detalles"] = "Sincronizado exitosamente con Shopify"
+                                    item["saldo"] = stk_serpi
+                                    item["precio"] = prc_serpi
+                                    exitos += 1
+                                else:
+                                    errores += 1
                             else:
                                 errores += 1
                                 
                             time.sleep(0.05)
                             progreso.progress((idx + 1) / total_p)
                             
+                        st.session_state.pop("shopify_catalogo_cache", None)
                         status.empty()
-                        st.success(f"🎉 Lote finalizado. Sincronizados: {exitos} | No encontrados: {errores}")
+                        st.success(f"🎉 Lote finalizado. Sincronizados con éxito: **{exitos}** | Discrepancias/Errores: **{errores}**")
                         st.rerun()
 
 # =============================================================

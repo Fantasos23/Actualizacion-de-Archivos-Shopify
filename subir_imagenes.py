@@ -8,23 +8,51 @@ base_dir = Path(__file__).parent
 load_dotenv(dotenv_path=base_dir / '.env')
 load_dotenv(dotenv_path=base_dir / 'Shopify.env')
 
-RAW_SHOP_URL = os.getenv("SHOPIFY_SHOP_URL", "").replace("https://", "").replace("http://", "").strip("/")
-API_TOKEN = os.getenv("SHOPIFY_API_TOKEN", "").strip()
-API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2026-04").strip()
+try:
+    import streamlit as st
+except ImportError:
+    st = None
 
-GRAPHQL_URL = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}/graphql.json"
-REST_URL = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}"
+base_dir = Path(__file__).parent
+load_dotenv(dotenv_path=base_dir / '.env')
+load_dotenv(dotenv_path=base_dir / 'Shopify.env')
 
-HEADERS = {
-    "X-Shopify-Access-Token": API_TOKEN,
-    "Content-Type": "application/json"
-}
+def get_secret(key, default=""):
+    try:
+        if st and hasattr(st, "secrets") and st.secrets:
+            if key in st.secrets:
+                return str(st.secrets[key]).strip().strip('"').strip("'")
+            for k, v in st.secrets.items():
+                if isinstance(k, str) and k.lower() == key.lower() and not isinstance(v, dict):
+                    return str(v).strip().strip('"').strip("'")
+            for sec_k, sec_v in st.secrets.items():
+                if isinstance(sec_v, dict):
+                    for sub_k, sub_v in sec_v.items():
+                        if isinstance(sub_k, str) and (sub_k.lower() == key.lower() or f"{sec_k}_{sub_k}".lower() == key.lower()):
+                            return str(sub_v).strip().strip('"').strip("'")
+    except Exception:
+        pass
+    val = os.getenv(key, default)
+    return str(val).strip().strip('"').strip("'") if val is not None else str(default).strip()
+
+def obtener_shopify_config():
+    raw_url = get_secret("SHOPIFY_SHOP_URL", "").replace("https://", "").replace("http://", "").strip("/")
+    token = get_secret("SHOPIFY_API_TOKEN", "")
+    version = get_secret("SHOPIFY_API_VERSION", "2024-04")
+    gql_url = f"https://{raw_url}/admin/api/{version}/graphql.json" if raw_url else ""
+    rest_url = f"https://{raw_url}/admin/api/{version}" if raw_url else ""
+    headers = {
+        "X-Shopify-Access-Token": token,
+        "Content-Type": "application/json"
+    }
+    return raw_url, token, version, gql_url, rest_url, headers
 
 def ejecutar_graphql(query, variables=None):
+    raw_url, token, version, gql_url, rest_url, headers = obtener_shopify_config()
     payload = {"query": query}
     if variables:
         payload["variables"] = variables
-    res = requests.post(GRAPHQL_URL, json=payload, headers=HEADERS)
+    res = requests.post(gql_url, json=payload, headers=headers, timeout=45)
     if res.status_code == 200:
         return res.json()
     raise Exception(f"HTTP {res.status_code}: {res.text}")
@@ -84,10 +112,11 @@ def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
     Sube la imagen directamente al producto en Shopify enviando Base64 (Método probado sin errores CDN).
     """
     try:
+        raw_url, token, version, gql_url, rest_url, headers = obtener_shopify_config()
         product_numeric_id = product_id.split("/")[-1]
         base64_image = base64.b64encode(file_bytes).decode('utf-8')
         
-        url_endpoint = f"{REST_URL}/products/{product_numeric_id}/images.json"
+        url_endpoint = f"{rest_url}/products/{product_numeric_id}/images.json"
         
         payload = {
             "image": {
@@ -98,7 +127,7 @@ def cargar_imagen_a_shopify(product_id, file_bytes, file_name):
             }
         }
         
-        res = requests.post(url_endpoint, json=payload, headers=HEADERS)
+        res = requests.post(url_endpoint, json=payload, headers=headers, timeout=30)
         
         if res.status_code in [200, 201]:
             return True, "Exitosa"
