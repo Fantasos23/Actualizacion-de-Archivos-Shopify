@@ -207,31 +207,78 @@ load_dotenv(dotenv_path=base_dir / '.env')
 load_dotenv(dotenv_path=base_dir / 'Shopify.env')
 
 def get_secret(key, default=""):
-    """Obtiene una variable de entorno de st.secrets (Nube) o de .env / os.environ (Local)."""
+    """
+    Obtiene una variable de entorno de st.secrets (Nube) o de .env / os.environ (Local).
+    Soporta búsquedas insensibles a mayúsculas y secciones anidadas TOML (ej. [shopify], [serpi]).
+    """
     try:
-        if hasattr(st, "secrets") and key in st.secrets:
-            return str(st.secrets[key]).strip()
+        if hasattr(st, "secrets") and st.secrets:
+            # 1. Búsqueda directa
+            if key in st.secrets:
+                return str(st.secrets[key]).strip().strip('"').strip("'")
+            # 2. Búsqueda insensible a mayúsculas
+            for k, v in st.secrets.items():
+                if isinstance(k, str) and k.lower() == key.lower() and not isinstance(v, dict):
+                    return str(v).strip().strip('"').strip("'")
+            # 3. Búsqueda en secciones anidadas (ej. [shopify] shop_url = "...")
+            for sec_k, sec_v in st.secrets.items():
+                if isinstance(sec_v, dict):
+                    for sub_k, sub_v in sec_v.items():
+                        if isinstance(sub_k, str) and (sub_k.lower() == key.lower() or f"{sec_k}_{sub_k}".lower() == key.lower()):
+                            return str(sub_v).strip().strip('"').strip("'")
     except Exception:
         pass
     val = os.getenv(key, default)
-    return str(val).strip() if val is not None else str(default).strip()
+    return str(val).strip().strip('"').strip("'") if val is not None else str(default).strip()
 
-RAW_SHOP_URL = get_secret("SHOPIFY_SHOP_URL", "").replace("https://", "").replace("http://", "").strip("/")
-API_TOKEN = get_secret("SHOPIFY_API_TOKEN", "")
-API_VERSION = get_secret("SHOPIFY_API_VERSION", "2026-04")
+def es_estado_excluido_de_shopify(estado_val):
+    """
+    Evalúa si el estado físico de un artículo en SERPI corresponde a 'NUEVO E' o 'USADO E'
+    (incluyendo variaciones de mayúsculas/minúsculas, espacios, guiones, puntos o paréntesis).
+    Los artículos con este estado NO deben ser creados en Shopify.
+    """
+    if not estado_val or not isinstance(estado_val, str):
+        return False
+    
+    s = str(estado_val).strip().lower()
+    s = s.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
+    
+    # Expresión regular: detecta nuevo/usado seguido de 'e'
+    patron = r'^(nuevo|usado)[\s\-_.\(\)]*e(\b|[\s\-_.\(\)]|$)'
+    if re.search(patron, s):
+        return True
+    
+    palabras = re.findall(r'\b[a-z0-9]+\b', s)
+    if len(palabras) >= 2 and palabras[0] in ('nuevo', 'usado') and palabras[1] == 'e':
+        return True
+        
+    return False
 
-GRAPHQL_URL = f"https://{RAW_SHOP_URL}/admin/api/{API_VERSION}/graphql.json"
-HEADERS = {
-    "X-Shopify-Access-Token": API_TOKEN,
-    "Content-Type": "application/json"
-}
+def obtener_shopify_config():
+    """Retorna la URL de GraphQL y cabeceras actualizadas dinámicamente."""
+    raw_url = get_secret("SHOPIFY_SHOP_URL", "").replace("https://", "").replace("http://", "").strip("/")
+    token = get_secret("SHOPIFY_API_TOKEN", "")
+    version = get_secret("SHOPIFY_API_VERSION", "2024-04")
+    
+    graphql_url = f"https://{raw_url}/admin/api/{version}/graphql.json" if raw_url else ""
+    headers = {
+        "X-Shopify-Access-Token": token,
+        "Content-Type": "application/json"
+    }
+    return raw_url, token, version, graphql_url, headers
 
-SERPI_BASE_URL = get_secret("SERPI_BASE_URL", "https://apis.serpi.com.co").rstrip("/")
-SERPI_HEADERS = {
-    "secretkey": get_secret("SERPI_SECRETKEY", ""),
-    "Authorization": f"Bearer {get_secret('SERPI_TOKEN', '')}",
-    "Accept": "application/json"
-}
+def obtener_serpi_config():
+    """Retorna la URL base de SERPI y sus cabeceras dinámicas."""
+    base_url = get_secret("SERPI_BASE_URL", "https://apis.serpi.com.co").rstrip("/")
+    headers = {
+        "secretkey": get_secret("SERPI_SECRETKEY", ""),
+        "Authorization": f"Bearer {get_secret('SERPI_TOKEN', '')}",
+        "Accept": "application/json"
+    }
+    return base_url, headers
+
+RAW_SHOP_URL, API_TOKEN, API_VERSION, GRAPHQL_URL, HEADERS = obtener_shopify_config()
+SERPI_BASE_URL, SERPI_HEADERS = obtener_serpi_config()
 
 SNAPSHOT_FILE = base_dir / "control_snapshot.json"
 SCHEMA_PATH = base_dir / "shopify_schema.json"
@@ -502,12 +549,23 @@ def esta_procesado(codigo_serpi):
 # 4. Funciones Auxiliares y Mapeo Shopify
 # -------------------------------------------------------------
 def ejecutar_graphql(query, variables=None):
+    raw_url, token, version, gql_url, hdrs = obtener_shopify_config()
+    if not raw_url or not token or "tu-tienda" in raw_url:
+        raise Exception(
+            "⚠️ Credenciales de Shopify no configuradas o incompletas. "
+            "Por favor verifica SHOPIFY_SHOP_URL y SHOPIFY_API_TOKEN en los Secrets de Streamlit Cloud o en tu archivo .env local."
+        )
     payload = {"query": query}
     if variables:
         payload["variables"] = variables
-    response = requests.post(GRAPHQL_URL, headers=HEADERS, json=payload)
+    response = requests.post(gql_url, headers=hdrs, json=payload, timeout=45)
     if response.status_code == 200:
         return response.json()
+    elif response.status_code == 404:
+        raise Exception(
+            f"HTTP 404 (No encontrado) al conectar con Shopify ({gql_url}). "
+            f"Verifica que SHOPIFY_SHOP_URL corresponda al dominio .myshopify.com de tu tienda."
+        )
     else:
         raise Exception(f"HTTP {response.status_code}: {response.text}")
 
@@ -1235,6 +1293,12 @@ def crear_producto_en_shopify(item_serpi):
     try:
         codigo = str(item_serpi.get("codigo", "")).strip()
         titulo = str(item_serpi.get("descripcion", "")).strip()
+        cp = item_serpi.get("camposPersonalizados", {}) or {}
+        
+        # 1. Regla de Exclusión para libros categoría 'E' (NUEVO E / USADO E)
+        estado_val = str(item_serpi.get("estado") or cp.get("estado") or "").strip()
+        if es_estado_excluido_de_shopify(estado_val):
+            return None, [f"El artículo '{codigo}' tiene estado '{estado_val}' (categoría 'E') y está excluido de creación en Shopify."]
 
         # Recuperar precio y stock consolidados
         precio_val = item_serpi.get("precio")
@@ -1688,44 +1752,53 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
         product_id, match_origen = obtener_product_id(fila_virtual)
         
         # ---------------------------------------------------------
-        # CASO A: EL PRODUCTO NO EXISTE EN SHOPIFY (CREAR)
+        # CASO A: EL PRODUCTO NO EXISTE EN SHOPIFY (CREAR O EXCLUIDO)
         # ---------------------------------------------------------
         if not product_id:
-            st.error("⚠️ Este producto no se encuentra registrado en el catálogo de Shopify.")
-            
-            with st.container(border=True):
-                st.markdown("#### 📝 Ficha Técnica a Crear")
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.write(f"**Título:** {titulo_serpi}")
-                    st.write(f"**Handle generado:** `{limpiar_para_handle(titulo_serpi)}`")
-                    st.write(f"**SKU / Metafield SERPI:** `{codigo_serpi}`")
-                with c2:
-                    autor = cp_serpi.get("autor") or "No especificado"
-                    editorial = cp_serpi.get("editorial") or "No especificado"
-                    paginas = cp_serpi.get("paginas") or "N/A"
-                    grupo_nombre = resolver_grupo_contable_articulo(item_consolidado)
-                    es_tax = determinar_taxable_desde_fila(item_consolidado)
-                    st.write(f"**Autor:** {autor}")
-                    st.write(f"**Editorial:** {editorial}")
-                    st.write(f"**Grupo Contable:** {grupo_nombre} ({'✅ Cobra IVA' if es_tax else '❌ Exento de IVA'})")
-            
-            st.write("")
-            if st.button("✨ Dar de Alta y Crear Producto en Shopify", type="primary", use_container_width=True, key="btn_create_modal"):
-                with st.spinner("Creando producto y configurando inventario..."):
-                    new_id, errs = crear_producto_en_shopify(item_consolidado)
-                    if new_id:
-                        registrar_producto_procesado(codigo_serpi)
-                        actualizar_sku_en_snapshot(codigo_serpi, stock=item_consolidado.get("saldo", nuevo_stock), precio=item_consolidado.get("precio", nuevo_precio))
-                        st.session_state[f"creado_{codigo_serpi}"] = new_id
-                        st.balloons()
-                        stock_final = int(float(item_consolidado.get("saldo", nuevo_stock) or 0))
-                        if errs:
-                            st.warning(f"⚠️ ¡Producto creado (ID: `{new_id}`), pero hubo un aviso en inventario: {errs}")
+            estado_art = str(cp_serpi.get("estado") or item_consolidado.get("estado") or "").strip()
+            es_excluido = es_estado_excluido_de_shopify(estado_art)
+
+            if es_excluido:
+                st.warning(
+                    f"🚫 **Producto Excluido de Shopify:** Este artículo tiene estado **'{estado_art}'** (categoría 'E'). "
+                    f"Según las reglas comerciales, **no debe ser creado en Shopify**."
+                )
+            else:
+                st.error("⚠️ Este producto no se encuentra registrado en el catálogo de Shopify.")
+                
+                with st.container(border=True):
+                    st.markdown("#### 📝 Ficha Técnica a Crear")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.write(f"**Título:** {titulo_serpi}")
+                        st.write(f"**Handle generado:** `{limpiar_para_handle(titulo_serpi)}`")
+                        st.write(f"**SKU / Metafield SERPI:** `{codigo_serpi}`")
+                    with c2:
+                        autor = cp_serpi.get("autor") or "No especificado"
+                        editorial = cp_serpi.get("editorial") or "No especificado"
+                        paginas = cp_serpi.get("paginas") or "N/A"
+                        grupo_nombre = resolver_grupo_contable_articulo(item_consolidado)
+                        es_tax = determinar_taxable_desde_fila(item_consolidado)
+                        st.write(f"**Autor:** {autor}")
+                        st.write(f"**Editorial:** {editorial}")
+                        st.write(f"**Grupo Contable:** {grupo_nombre} ({'✅ Cobra IVA' if es_tax else '❌ Exento de IVA'})")
+                
+                st.write("")
+                if st.button("✨ Dar de Alta y Crear Producto en Shopify", type="primary", use_container_width=True, key="btn_create_modal"):
+                    with st.spinner("Creando producto y configurando inventario..."):
+                        new_id, errs = crear_producto_en_shopify(item_consolidado)
+                        if new_id:
+                            registrar_producto_procesado(codigo_serpi)
+                            actualizar_sku_en_snapshot(codigo_serpi, stock=item_consolidado.get("saldo", nuevo_stock), precio=item_consolidado.get("precio", nuevo_precio))
+                            st.session_state[f"creado_{codigo_serpi}"] = new_id
+                            st.balloons()
+                            stock_final = int(float(item_consolidado.get("saldo", nuevo_stock) or 0))
+                            if errs:
+                                st.warning(f"⚠️ ¡Producto creado (ID: `{new_id}`), pero hubo un aviso en inventario: {errs}")
+                            else:
+                                st.success(f"🎉 ¡Producto creado y publicado exitosamente con {stock_final} unidades de inventario! (ID: `{new_id}`)")
                         else:
-                            st.success(f"🎉 ¡Producto creado y publicado exitosamente con {stock_final} unidades de inventario! (ID: `{new_id}`)")
-                    else:
-                        st.error(f"Error al crear: {errs}")
+                            st.error(f"Error al crear: {errs}")
 
             # Desplegar carga de imagen si se acaba de crear
             id_activo = st.session_state.get(f"creado_{codigo_serpi}")
@@ -2005,8 +2078,13 @@ with tab_unificado:
                     motivo_str = ", ".join(tipos) if tipos else "✅ 100% Al día"
                     prod_shopify_id = p_data.get("id")
                 else:
-                    motivo_str = "🆕 Nuevo en SERPI (No creado en Shopify)"
-                    detalles.append("Este producto modificado en SERPI aún no existe en Shopify.")
+                    estado_art = str(cp_serpi.get("estado") or snap_item.get("estado") or "").strip()
+                    if es_estado_excluido_de_shopify(estado_art):
+                        motivo_str = f"🚫 Excluido ({estado_art})"
+                        detalles.append(f"Este artículo tiene estado '{estado_art}' (categoría 'E') y no debe crearse en Shopify.")
+                    else:
+                        motivo_str = "🆕 Nuevo en SERPI (No creado en Shopify)"
+                        detalles.append("Este producto modificado en SERPI aún no existe en Shopify.")
                     prod_shopify_id = None
                 
                 mapa_novedades[cod] = {
@@ -2235,6 +2313,7 @@ with tab_unificado:
                         p for p in lista_cache 
                         if not esta_procesado(p.get("codigo")) 
                         and ("✅ 100% Al día" not in str(p.get("motivo", "")))
+                        and ("🚫 Excluido" not in str(p.get("motivo", "")))
                     ]
                     total_p = len(pendientes)
                     exitos, errores = 0, 0
