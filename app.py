@@ -522,17 +522,49 @@ def guardar_snapshot_control(data):
     except Exception as e:
         st.error(f"Error guardando archivo de control: {e}")
 
-def actualizar_sku_en_snapshot(codigo, stock=None, precio=None):
+def actualizar_sku_en_snapshot(codigo, stock=None, precio=None, fila_datos=None):
     snapshot = cargar_snapshot_control()
     codigo_str = str(codigo).strip()
     if codigo_str not in snapshot:
         snapshot[codigo_str] = {}
+        
+    if fila_datos:
+        cp = fila_datos.get("camposPersonalizados") or {}
+        if isinstance(fila_datos, dict):
+            if fila_datos.get("descripcion"):
+                snapshot[codigo_str]["descripcion"] = fila_datos.get("descripcion")
+            if fila_datos.get("idgrupocontable") is not None:
+                snapshot[codigo_str]["idgrupocontable"] = fila_datos.get("idgrupocontable")
+            if fila_datos.get("grupocontable"):
+                snapshot[codigo_str]["grupocontable"] = fila_datos.get("grupocontable")
+            if cp.get("autor"):
+                snapshot[codigo_str]["autor"] = cp.get("autor")
+            if cp.get("editorial"):
+                snapshot[codigo_str]["editorial"] = cp.get("editorial")
+            if cp.get("presentacion"):
+                snapshot[codigo_str]["presentacion"] = cp.get("presentacion")
+            if cp.get("estado"):
+                snapshot[codigo_str]["estado"] = cp.get("estado")
+            if cp.get("paginas"):
+                snapshot[codigo_str]["paginas"] = cp.get("paginas")
+            if cp.get("categoria"):
+                snapshot[codigo_str]["categoria"] = cp.get("categoria")
+            snapshot[codigo_str]["camposPersonalizados"] = cp
+
     if stock is not None:
-        snapshot[codigo_str]["stock"] = int(float(stock))
+        try:
+            snapshot[codigo_str]["stock"] = int(float(stock))
+        except (ValueError, TypeError):
+            pass
     if precio is not None:
-        snapshot[codigo_str]["precio"] = float(precio)
+        try:
+            snapshot[codigo_str]["precio"] = float(precio)
+        except (ValueError, TypeError):
+            pass
+
     snapshot[codigo_str]["ultima_actualizacion"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     guardar_snapshot_control(snapshot)
+    return snapshot
 
 def inicializar_memoria_procesados():
     if "productos_procesados_ids" not in st.session_state:
@@ -2019,23 +2051,36 @@ with tab_unificado:
                 st.session_state["shopify_catalogo_cache"] = prods_shopify
             
             mapa_novedades = {}
-            for art in articulos_raw:
+            prog_serpi = st.progress(0)
+            status_serpi = st.empty()
+            total_raw = len(articulos_raw)
+
+            for idx_art, art in enumerate(articulos_raw):
                 cod = str(art.get("codigo", "")).strip()
                 if not cod:
                     continue
                 
-                # Obtener stock y precio oficial desde snapshot
-                snap_item = snapshot_previo.get(cod, {})
-                stock_snap = snap_item.get("stock")
-                precio_snap = snap_item.get("precio")
+                status_serpi.text(f"[{idx_art+1}/{total_raw}] Consultando SERPI en vivo: {art.get('descripcion', '')[:30]}...")
+                prog_serpi.progress((idx_art + 1) / total_raw if total_raw > 0 else 1.0)
                 
-                # Ficha técnica SERPI
+                # 1. Obtener Stock e Inventario EN VIVO desde la API de SERPI
+                stock_live = obtener_stock_puntual_serpi(cod, forzar_en_vivo=True)
+                
+                # 2. Obtener Precio Oficial (Lista PP) EN VIVO desde la API de SERPI
+                precio_live = obtener_precio_puntual_serpi(cod)
+                
+                # 3. Actualizar el archivo de control (control_snapshot.json) inmediatamente
+                actualizar_sku_en_snapshot(cod, stock=stock_live, precio=precio_live, fila_datos=art)
+                
+                # 4. Ficha técnica SERPI
                 cp_serpi = art.get("camposPersonalizados", {}) or {}
                 id_gc = art.get("idgrupocontable")
                 nom_gc = art.get("grupocontable") or resolver_grupo_contable_articulo(art)
                 erp_taxable = determinar_taxable_desde_fila(art)
+                estado_art = str(cp_serpi.get("estado") or art.get("estado") or "").strip()
+                es_excluido = es_estado_excluido_de_shopify(estado_art)
                 
-                # Datos de Shopify para este SKU
+                # 5. Datos de Shopify para este SKU
                 p_data = prods_shopify.get(cod)
                 
                 tipos = []
@@ -2044,14 +2089,14 @@ with tab_unificado:
                 if p_data:
                     # 1. Stock
                     sp_stock = int(p_data.get("variant", {}).get("inventoryQuantity") or 0) if p_data.get("variant") else 0
-                    erp_stock = int(float(stock_snap or 0)) if stock_snap is not None else None
-                    if erp_stock is not None and sp_stock != erp_stock:
+                    erp_stock = int(float(stock_live or 0)) if stock_live is not None else 0
+                    if sp_stock != erp_stock:
                         tipos.append("📦 Stock")
                         detalles.append(f"Stock: Shopify={sp_stock} | SERPI={erp_stock}")
                         
                     # 2. Precio
                     sp_price = float(p_data.get("variant", {}).get("price") or 0) if p_data.get("variant") else 0.0
-                    erp_price = float(precio_snap or 0) if precio_snap is not None else 0.0
+                    erp_price = float(precio_live or 0) if precio_live is not None else 0.0
                     if erp_price > 0 and abs(sp_price - erp_price) >= 1.0:
                         tipos.append("💰 Precio")
                         detalles.append(f"Precio: Shopify=${sp_price:,.0f} | SERPI=${erp_price:,.0f}")
@@ -2092,8 +2137,7 @@ with tab_unificado:
                     motivo_str = ", ".join(tipos) if tipos else "✅ 100% Al día"
                     prod_shopify_id = p_data.get("id")
                 else:
-                    estado_art = str(cp_serpi.get("estado") or snap_item.get("estado") or "").strip()
-                    if es_estado_excluido_de_shopify(estado_art):
+                    if es_excluido:
                         motivo_str = f"🚫 Excluido ({estado_art})"
                         detalles.append(f"Este artículo tiene estado '{estado_art}' (categoría 'E') y no debe crearse en Shopify.")
                     else:
@@ -2107,12 +2151,15 @@ with tab_unificado:
                     "idgrupocontable": id_gc,
                     "grupocontable": nom_gc,
                     "camposPersonalizados": cp_serpi,
-                    "saldo": stock_snap,
-                    "precio": precio_snap,
+                    "saldo": stock_live,
+                    "precio": precio_live,
                     "motivo": motivo_str,
                     "detalles": "  •  ".join(detalles) if detalles else "Coincide exactamente con Shopify",
                     "_product_id": prod_shopify_id
                 }
+
+            status_serpi.empty()
+            prog_serpi.empty()
             
             lista_final = list(mapa_novedades.values())
             if lista_final:
