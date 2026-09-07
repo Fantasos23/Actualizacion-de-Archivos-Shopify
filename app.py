@@ -471,8 +471,33 @@ def obtener_precio_puntual_serpi(codigo_sku):
         pass
     return 0.0
 
+# Bodegas autorizadas para sincronizar existencias con Shopify
+# ID 16: BG (BODEGA VENTAS)
+# ID 17: CG (INVENTARIO EN CONSIGNACION)
+BODEGAS_PERMITIDAS_CODIGOS = {"BG", "CG"}
+BODEGAS_PERMITIDAS_IDS = {16, 17}
+
+def es_bodega_permitida_shopify(id_bodega=None, codigo_bodega=None):
+    """
+    Determina si un registro de inventario pertenece a las bodegas autorizadas para Shopify:
+    - Bodega Ventas (BG / ID 16)
+    - Inventario en Consignación (CG / ID 17)
+    Cualquier otra bodega (PDV, 2DOPISO, ANTERIOR, BX, BP) es ignorada.
+    """
+    if codigo_bodega:
+        cb = str(codigo_bodega).strip().upper()
+        if cb in BODEGAS_PERMITIDAS_CODIGOS:
+            return True
+    if id_bodega is not None:
+        try:
+            if int(id_bodega) in BODEGAS_PERMITIDAS_IDS:
+                return True
+        except (ValueError, TypeError):
+            pass
+    return False
+
 def obtener_stock_puntual_serpi(codigo_sku, forzar_en_vivo=False):
-    """Consulta las existencias de un SKU específico sumando todas las bodegas en SERPI."""
+    """Consulta las existencias de un SKU específico sumando únicamente las bodegas autorizadas (BG y CG) en SERPI."""
     try:
         codigo_str = str(codigo_sku).strip()
         if not forzar_en_vivo:
@@ -489,14 +514,15 @@ def obtener_stock_puntual_serpi(codigo_sku, forzar_en_vivo=False):
             found = False
             for r in res:
                 if str(r.get("codigo", "")).strip() == codigo_str:
-                    total_stock += float(r.get("saldo", 0) or 0)
+                    if es_bodega_permitida_shopify(r.get("idBodega"), r.get("codigoBodega")):
+                        total_stock += float(r.get("saldo", 0) or 0)
                     found = True
             if found:
-                val = int(total_stock)
+                val = max(0, int(total_stock))
                 actualizar_sku_en_snapshot(codigo_str, stock=val)
                 return val
             if len(res) > 0:
-                val = int(sum(float(r.get("saldo", 0) or 0) for r in res))
+                val = max(0, int(sum(float(r.get("saldo", 0) or 0) for r in res if es_bodega_permitida_shopify(r.get("idBodega"), r.get("codigoBodega")))))
                 actualizar_sku_en_snapshot(codigo_str, stock=val)
                 return val
     except Exception:
@@ -647,7 +673,7 @@ def enriquecer_snapshot_serpi_completo(status_callback=None, incluir_recalculo_s
         )
         for item in saldos_raw:
             cod = str(item.get("codigo", "")).strip()
-            if cod:
+            if cod and es_bodega_permitida_shopify(item.get("idBodega"), item.get("codigoBodega")):
                 saldos_map[cod] = saldos_map.get(cod, 0) + int(float(item.get("saldo", 0) or 0))
 
     # 4. Consolidar catálogo con Ficha Técnica, Precios y Stock en Snapshot
@@ -2477,7 +2503,7 @@ with tab_reconciliacion:
                 chk_recalcular_saldos = st.checkbox(
                     "⚠️ Recalcular inventario físico completo en SERPI (~15-20 min)",
                     value=False,
-                    help="Consulta saldo por saldo en todas las bodegas de SERPI. Proceso pesado, solo usar en mantenimiento o fuera de horario."
+                    help="Consulta saldo por saldo en SERPI consolidando únicamente Bodega Ventas (BG) y Consignación (CG). Proceso pesado, solo usar en mantenimiento o fuera de horario."
                 )
                 chk_forzar_shopify = st.checkbox(
                     "⚡ Forzar nueva extracción desde servidores de Shopify",
