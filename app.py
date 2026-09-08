@@ -441,13 +441,14 @@ def consultar_precios_completos(status_callback=None):
     """Consulta la lista de precios oficial (LISTA PP / id_listaprecio=1) de SERPI con precios por artículo."""
     return consultar_todos_los_registros_serpi("/api/v1/ListaPrecioDetalle", params_base={"id_listaprecio": 1}, tamano_pagina=1000, max_paginas=130, status_callback=status_callback)
 
-def obtener_precio_puntual_serpi(codigo_sku):
-    """Consulta el precio de un SKU específico directamente en SERPI o desde el Snapshot."""
+def obtener_precio_puntual_serpi(codigo_sku, forzar_en_vivo=True):
+    """Consulta el precio de un SKU específico directamente en SERPI (en vivo por defecto) y actualiza el snapshot."""
     try:
         codigo_str = str(codigo_sku).strip()
-        snapshot = cargar_snapshot_control()
-        if codigo_str in snapshot and snapshot[codigo_str].get("precio") is not None and float(snapshot[codigo_str]["precio"]) > 0:
-            return float(snapshot[codigo_str]["precio"])
+        if not forzar_en_vivo:
+            snapshot = cargar_snapshot_control()
+            if codigo_str in snapshot and snapshot[codigo_str].get("precio") is not None and float(snapshot[codigo_str]["precio"]) > 0:
+                return float(snapshot[codigo_str]["precio"])
 
         res = consultar_serpi_api("/api/v1/ListaPrecioDetalle", params={"codigo": codigo_str, "limite": 10})
         if res and isinstance(res, list):
@@ -461,12 +462,17 @@ def obtener_precio_puntual_serpi(codigo_sku):
             if precios_validos:
                 for id_lp, p in precios_validos:
                     if id_lp == 1:
+                        actualizar_sku_en_snapshot(codigo_str, precio=p)
                         return p
-                return max(p for _, p in precios_validos)
+                max_p = max(p for _, p in precios_validos)
+                actualizar_sku_en_snapshot(codigo_str, precio=max_p)
+                return max_p
             if len(res) > 0:
                 p_alt = [float(r.get("precio", 0) or 0) for r in res if float(r.get("precio", 0) or 0) > 0]
                 if p_alt:
-                    return max(p_alt)
+                    max_p = max(p_alt)
+                    actualizar_sku_en_snapshot(codigo_str, precio=max_p)
+                    return max_p
     except Exception:
         pass
     return 0.0
@@ -496,16 +502,15 @@ def es_bodega_permitida_shopify(id_bodega=None, codigo_bodega=None):
             pass
     return False
 
-def obtener_stock_puntual_serpi(codigo_sku, forzar_en_vivo=False):
-    """Consulta las existencias de un SKU específico sumando únicamente las bodegas autorizadas (BG y CG) en SERPI."""
+def obtener_stock_puntual_serpi(codigo_sku, forzar_en_vivo=True):
+    """Consulta las existencias de un SKU específico sumando únicamente las bodegas autorizadas (BG y CG) en SERPI (en vivo por defecto)."""
     try:
         codigo_str = str(codigo_sku).strip()
         if not forzar_en_vivo:
             snapshot = cargar_snapshot_control()
             if codigo_str in snapshot and snapshot[codigo_str].get("stock") is not None:
                 stk_val = int(float(snapshot[codigo_str]["stock"]))
-                if stk_val > 0:
-                    return stk_val
+                return stk_val
 
         hoy = datetime.now().strftime("%Y-%m-%d")
         res = consultar_serpi_api("/api/v1/SaldoInventarioSinCosto", params={"fechaCorte": hoy, "codigo": codigo_str, "limite": 20})
@@ -1388,6 +1393,13 @@ def crear_producto_en_shopify(item_serpi):
         elif isinstance(tags_raw, str) and tags_raw.strip():
             tags_list = [t.strip() for t in tags_raw.split(',') if t.strip()]
 
+        categoria_val = str(cp.get("categoria") or item_serpi.get("categoria") or "").strip()
+        if categoria_val and categoria_val not in tags_list:
+            tags_list.append(categoria_val)
+
+        autor_val = str(cp.get("autor") or item_serpi.get("autor") or "").strip()
+        editorial_val = str(cp.get("editorial") or item_serpi.get("editorial") or "").strip()
+
         # Metafields
         metafields_input = [{
             "namespace": "custom",
@@ -1413,6 +1425,8 @@ def crear_producto_en_shopify(item_serpi):
         input_product = {
             "title": titulo,
             "handle": handle,
+            "vendor": autor_val,
+            "productType": editorial_val,
             "descriptionHtml": desc_html,
             "tags": tags_list,
             "status": "ACTIVE",
@@ -1518,29 +1532,23 @@ def actualizar_producto_con_esquema(product_id, row, campos_permitidos=None):
         if v_desc is not None:
             input_product["descriptionHtml"] = formatear_descripcion_html(v_desc)
 
-    # B. Vendor / Proveedor / Editorial (NATIVO)
+    # B. Vendor / Proveedor / Autor (NATIVO: En Troya, Vendor = Autor)
     if campos_permitidos is None or "vendor" in campos_permitidos:
-        posibles_vendor = campos_estandar.get("vendor", {}).get(
-            "posibles_columnas_excel", ["vendor", "editorial", "proveedor", "marca"]
-        )
+        posibles_vendor = ["autor", "Autor", "vendor", "Vendor", "proveedor", "marca"]
         v_vendor = obtener_valor_fila(row, posibles_vendor)
         if v_vendor is not None:
             input_product["vendor"] = str(v_vendor).strip()
 
-    # C. Product Type / Categoría / Línea (NATIVO)
+    # C. Product Type / Editorial / Sello (NATIVO: En Troya, ProductType = Editorial)
     if campos_permitidos is None or "productType" in campos_permitidos:
-        posibles_type = campos_estandar.get("productType", {}).get(
-            "posibles_columnas_excel", ["productType", "tipo", "categoria", "linea", "genero"]
-        )
+        posibles_type = ["editorial", "Editorial", "productType", "Product Type", "tipo", "sello"]
         v_type = obtener_valor_fila(row, posibles_type)
         if v_type is not None:
             input_product["productType"] = str(v_type).strip()
 
-    # D. Tags / Etiquetas (NATIVO)
+    # D. Tags / Etiquetas / Categoría (NATIVO)
     if campos_permitidos is None or "tags" in campos_permitidos:
-        posibles_tags = campos_estandar.get("tags", {}).get(
-            "posibles_columnas_excel", ["tags", "etiquetas", "Etiquetas", "TAGS"]
-        )
+        posibles_tags = ["tags", "Tags", "etiquetas", "Etiquetas", "categoria", "Categoria"]
         v_tags = obtener_valor_fila(row, posibles_tags)
         if v_tags is not None:
             if isinstance(v_tags, list):
@@ -1654,7 +1662,7 @@ def actualizar_producto_con_esquema(product_id, row, campos_permitidos=None):
                 cod_limpio = limpiar_identificador_codigo(v_sku)
                 if cod_limpio:
                     var_item["barcode"] = cod_limpio
-                    var_item["inventoryItem"] = {"sku": cod_limpio}
+                    var_item["inventoryItem"] = {"sku": cod_limpio, "tracked": True}
             if v_taxable is not None:
                 var_item["taxable"] = bool(v_taxable)
 
@@ -2417,18 +2425,32 @@ with tab_unificado:
                             id_gc = item.get("idgrupocontable")
                             nom_gc = item.get("grupocontable") or resolver_grupo_contable_articulo(item)
                             
-                            if stk_serpi is None or int(float(stk_serpi or 0)) == 0:
-                                stk_serpi = obtener_stock_puntual_serpi(cod_serpi, forzar_en_vivo=True)
-                            if prc_serpi is None or float(prc_serpi or 0) == 0:
-                                prc_serpi = obtener_precio_puntual_serpi(cod_serpi)
+                            stk_serpi = obtener_stock_puntual_serpi(cod_serpi, forzar_en_vivo=True)
+                            prc_serpi = obtener_precio_puntual_serpi(cod_serpi, forzar_en_vivo=True)
                             
                             status.text(f"[{idx+1}/{total_p}] Sincronizando: {tit_serpi[:30]}...")
+                            
+                            autor_val = str(cp_serpi.get("autor") or item.get("autor") or "").strip()
+                            editorial_val = str(cp_serpi.get("editorial") or item.get("editorial") or "").strip()
+                            categoria_val = str(cp_serpi.get("categoria") or item.get("categoria") or "").strip()
+                            
                             fila_v = pd.Series({
                                 "serpi": cod_serpi, 
+                                "sku": cod_serpi,
+                                "barcode": cod_serpi,
                                 "descripcion": tit_serpi, 
                                 "price": prc_serpi, 
                                 "idgrupocontable": id_gc,
                                 "grupocontable": nom_gc,
+                                "autor": autor_val,
+                                "vendor": autor_val,
+                                "editorial": editorial_val,
+                                "productType": editorial_val,
+                                "categoria": categoria_val,
+                                "tags": categoria_val,
+                                "presentacion": cp_serpi.get("presentacion") or item.get("presentacion", ""),
+                                "estado": cp_serpi.get("estado") or item.get("estado", ""),
+                                "paginas": cp_serpi.get("paginas") or item.get("paginas", ""),
                                 **cp_serpi
                             })
                             
@@ -2863,35 +2885,44 @@ with tab_reconciliacion:
                         status_sync.text(f"[{idx+1}/{total_lote}] Sincronizando: {tit[:32]}... ({sku})")
                         
                         try:
-                            # 1. Si difiere el stock, actualizar inventario con protección de existencias
-                            stk_a_enviar = item["_erp_stock"]
-                            if item["_diff_stock"]:
-                                if stk_a_enviar == 0:
-                                    stk_vivo = obtener_stock_puntual_serpi(sku, forzar_en_vivo=True)
-                                    if stk_vivo > 0:
-                                        stk_a_enviar = stk_vivo
-                                actualizar_stock_shopify(p_id, stk_a_enviar)
+                            # 1. Consultar y actualizar stock en vivo (BG + CG)
+                            stk_vivo = obtener_stock_puntual_serpi(sku, forzar_en_vivo=True)
+                            actualizar_stock_shopify(p_id, stk_vivo)
+                            stk_a_enviar = stk_vivo
                                 
-                            # 2. Actualizar precio, sku, taxable, canales y ficha
-                            p_erp = float(item.get("_erp_price") or serpi_info.get("precio") or 0)
-                            precio_a_enviar = p_erp if p_erp > 0 else None
+                            # 2. Consultar precio en vivo (Lista 1) y mapear taxonomía exacta de Troya
+                            p_vivo = obtener_precio_puntual_serpi(sku, forzar_en_vivo=True)
+                            precio_a_enviar = p_vivo if p_vivo > 0 else float(item.get("_erp_price") or serpi_info.get("precio") or 0)
+                            
+                            cp = serpi_info.get("camposPersonalizados") or {}
+                            autor_val = str(serpi_info.get("autor") or cp.get("autor") or "").strip()
+                            editorial_val = str(serpi_info.get("editorial") or cp.get("editorial") or "").strip()
+                            categoria_val = str(serpi_info.get("categoria") or cp.get("categoria") or "").strip()
+                            
                             fila_update = pd.Series({
                                 "serpi": sku,
+                                "sku": sku,
+                                "barcode": sku,
                                 "descripcion": serpi_info.get("descripcion", tit),
                                 "price": precio_a_enviar,
                                 "idgrupocontable": serpi_info.get("idgrupocontable"),
                                 "grupocontable": serpi_info.get("grupocontable"),
-                                "autor": serpi_info.get("autor", ""),
-                                "editorial": serpi_info.get("editorial", ""),
-                                "presentacion": serpi_info.get("presentacion", ""),
-                                "estado": serpi_info.get("estado", ""),
-                                **(serpi_info.get("camposPersonalizados") or {})
+                                "autor": autor_val,
+                                "vendor": autor_val,
+                                "editorial": editorial_val,
+                                "productType": editorial_val,
+                                "categoria": categoria_val,
+                                "tags": categoria_val,
+                                "presentacion": serpi_info.get("presentacion") or cp.get("presentacion", ""),
+                                "estado": serpi_info.get("estado") or cp.get("estado", ""),
+                                "paginas": serpi_info.get("paginas") or cp.get("paginas", ""),
+                                **cp
                             })
                             actualizar_producto_con_esquema(p_id, fila_update)
                             
                             # 3. Registrar procesado
                             registrar_producto_procesado(sku)
-                            actualizar_sku_en_snapshot(sku, stock=stk_a_enviar, precio=item["_erp_price"])
+                            actualizar_sku_en_snapshot(sku, stock=stk_a_enviar, precio=precio_a_enviar)
                             exitos += 1
                         except Exception as e:
                             errores += 1
