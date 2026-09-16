@@ -2835,47 +2835,135 @@ with tab_reconciliacion:
                                 f"Causas posibles: el SKU fue inventado en Shopify, es un producto temporal, o tiene un error de digitación en Shopify frente al código de barras real."
                             )
             
-        # --- FASE 2: SINCRONIZACIÓN CONTROLADA ---
+        # --- FASE 2: SINCRONIZACIÓN CONTROLADA Y SELECTIVA ---
         st.write("")
         with st.container(border=True):
-            st.markdown("#### 🚀 Fase 2: Sincronización Controlada en Shopify")
-            col_sy1, col_sy2, col_sy3 = st.columns([3, 2, 2])
+            st.markdown("#### 🚀 Fase 2: Sincronización Controlada y Selectiva en Shopify")
             
-            pendientes_rec = [d for d in desfasados if not esta_procesado(d["SKU"])]
-            with col_sy1:
+            # 1. Contadores y agrupación por tipo de discrepancia
+            pendientes_todos = [d for d in desfasados if not esta_procesado(d["SKU"])]
+            pendientes_stock = [d for d in pendientes_todos if d.get("_diff_stock")]
+            pendientes_precio = [d for d in pendientes_todos if d.get("_diff_precio")]
+            pendientes_iva = [d for d in pendientes_todos if d.get("_diff_iva")]
+            pendientes_ficha = [d for d in pendientes_todos if d.get("_diff_ficha")]
+            
+            # Pre-seleccionar la opción según el filtro que el usuario tenga activo en las píldoras de arriba
+            filtro_activo_arriba = st.session_state.get("filtro_reconciliacion", "TODOS")
+            mapa_indices = {"TODOS": 0, "STOCK": 1, "PRECIO": 2, "IVA": 3, "FICHA": 4}
+            idx_def = mapa_indices.get(filtro_activo_arriba, 0)
+            
+            opciones_grupo = [
+                f"🔄 Todos los desfasados ({len(pendientes_todos)} pendientes)",
+                f"📦 Solo productos con diferencia de Stock ({len(pendientes_stock)} pendientes)",
+                f"💰 Solo productos con diferencia de Precio ({len(pendientes_precio)} pendientes)",
+                f"⚖️ Solo productos con diferencia de IVA / Impuestos ({len(pendientes_iva)} pendientes)",
+                f"📝 Solo productos con diferencia de Ficha Técnica ({len(pendientes_ficha)} pendientes)"
+            ]
+            
+            col_fase2_1, col_fase2_2 = st.columns([3, 2])
+            with col_fase2_1:
+                tipo_disc_sel = st.selectbox(
+                    "🎯 Seleccionar grupo de discrepancias a procesar:",
+                    opciones_grupo,
+                    index=idx_def,
+                    key="sel_tipo_disc_rec"
+                )
+            
+            # Determinar lote de origen y valores por defecto según el grupo elegido
+            if "Stock" in tipo_disc_sel:
+                lote_base = pendientes_stock
+                def_stock, def_precio, def_iva, def_ficha = True, False, False, False
+            elif "Precio" in tipo_disc_sel:
+                lote_base = pendientes_precio
+                def_stock, def_precio, def_iva, def_ficha = False, True, False, False
+            elif "IVA" in tipo_disc_sel:
+                lote_base = pendientes_iva
+                def_stock, def_precio, def_iva, def_ficha = False, False, True, False
+            elif "Ficha" in tipo_disc_sel:
+                lote_base = pendientes_ficha
+                def_stock, def_precio, def_iva, def_ficha = False, False, False, True
+            else:
+                lote_base = pendientes_todos
+                def_stock, def_precio, def_iva, def_ficha = True, True, True, True
+
+            with col_fase2_2:
                 tam_lote_sel = st.selectbox(
-                    "Lote a sincronizar:",
-                    ["Todo el lote de desfasados", "Bloque de 100 productos", "Bloque de 250 productos", "Bloque de 500 productos"],
+                    "📦 Tamaño de bloque / lote:",
+                    ["Todo el grupo seleccionado", "Bloque de 50 productos", "Bloque de 100 productos", "Bloque de 250 productos", "Bloque de 500 productos"],
                     key="tam_lote_rec_sel"
                 )
-            with col_sy2:
-                st.write("")
-                st.caption(f"Pendientes por sincronizar: **{len(pendientes_rec)}** de {len(desfasados)}")
-            with col_sy3:
-                st.write("")
+
+            # Selector granular de atributos a modificar en Shopify
+            st.markdown("<p style='font-size: 13px; font-weight: 500; color: #9AA0A6; margin-bottom: 2px;'>⚙️ Atributos a modificar en Shopify para este lote:</p>", unsafe_allow_html=True)
+            col_c1, col_c2, col_c3, col_c4 = st.columns(4)
+            with col_c1:
+                up_stock = st.checkbox("📦 Stock (Bodegas BG+CG)", value=def_stock, key="chk_fase2_stock")
+            with col_c2:
+                up_precio = st.checkbox("💰 Precio (Lista 1)", value=def_precio, key="chk_fase2_precio")
+            with col_c3:
+                up_iva = st.checkbox("⚖️ IVA (Grupo Contable)", value=def_iva, key="chk_fase2_iva")
+            with col_c4:
+                up_ficha = st.checkbox("📝 Ficha y Metacampos", value=def_ficha, key="chk_fase2_ficha")
+
+            total_pendientes_grupo = len(lote_base)
+            limite_lote = total_pendientes_grupo
+            if "50" in tam_lote_sel: limite_lote = min(50, total_pendientes_grupo)
+            elif "100" in tam_lote_sel: limite_lote = min(100, total_pendientes_grupo)
+            elif "250" in tam_lote_sel: limite_lote = min(250, total_pendientes_grupo)
+            elif "500" in tam_lote_sel: limite_lote = min(500, total_pendientes_grupo)
+            
+            lote_a_procesar = lote_base[:limite_lote]
+            cant_a_procesar = len(lote_a_procesar)
+
+            campos_activos = []
+            if up_stock: campos_activos.append("Stock")
+            if up_precio: campos_activos.append("Precio")
+            if up_iva: campos_activos.append("IVA")
+            if up_ficha: campos_activos.append("Ficha")
+            resumen_campos = ", ".join(campos_activos) if campos_activos else "Ninguno"
+
+            st.write("")
+            col_btn_info, col_btn_act = st.columns([3, 2])
+            with col_btn_info:
+                st.caption(f"📊 Pendientes en este grupo: **{total_pendientes_grupo}** | A procesar en esta tanda: **{cant_a_procesar}**")
+                st.caption(f"🔧 Atributos que se modificarán: **{resumen_campos}**")
+                
+            with col_btn_act:
+                btn_texto = f"🚀 Sincronizar {cant_a_procesar} productos" if cant_a_procesar > 0 else "🚀 Sincronizar en Shopify"
                 btn_sync_desfasados = st.button(
-                    "🚀 Sincronizar Diferencias en Shopify",
+                    btn_texto,
                     type="primary",
+                    disabled=(cant_a_procesar == 0 or not campos_activos),
                     use_container_width=True,
                     key="btn_sync_desfasados"
                 )
                 
             if btn_sync_desfasados:
-                if not pendientes_rec:
-                    st.info("Todos los productos desfasados ya han sido procesados y sincronizados.")
+                if not lote_a_procesar:
+                    st.info("No hay productos pendientes por sincronizar en el grupo seleccionado.")
+                elif not campos_activos:
+                    st.warning("⚠️ Debes seleccionar al menos un atributo (Stock, Precio, IVA o Ficha) para sincronizar.")
                 else:
-                    limite_lote = len(pendientes_rec)
-                    if "100" in tam_lote_sel: limite_lote = min(100, len(pendientes_rec))
-                    elif "250" in tam_lote_sel: limite_lote = min(250, len(pendientes_rec))
-                    elif "500" in tam_lote_sel: limite_lote = min(500, len(pendientes_rec))
-                    
-                    lote_a_procesar = pendientes_rec[:limite_lote]
                     total_lote = len(lote_a_procesar)
-                    
                     prog_sync = st.progress(0)
                     status_sync = st.empty()
                     
                     exitos, errores = 0, 0
+                    
+                    # Preparar lista de campos permitidos para actualizar_producto_con_esquema
+                    campos_permitidos_lote = []
+                    if up_precio:
+                        campos_permitidos_lote.append("price")
+                    if up_iva:
+                        campos_permitidos_lote.extend(["taxable", "impuesto", "impuestos", "idgrupocontable", "grupocontable"])
+                    if up_ficha:
+                        campos_permitidos_lote.extend([
+                            "descriptionHtml", "vendor", "productType", "tags",
+                            "autor", "editorial", "categoria", "presentacion", "estado", "paginas", "serpi"
+                        ])
+                    if up_precio or up_iva or up_ficha:
+                        campos_permitidos_lote.append("sku")
+                    
                     for idx, item in enumerate(lote_a_procesar):
                         sku = item["SKU"]
                         p_id = item["_product_id"]
@@ -2885,49 +2973,57 @@ with tab_reconciliacion:
                         status_sync.text(f"[{idx+1}/{total_lote}] Sincronizando: {tit[:32]}... ({sku})")
                         
                         try:
-                            # 1. Consultar y actualizar stock en vivo (BG + CG)
-                            stk_vivo = obtener_stock_puntual_serpi(sku, forzar_en_vivo=True)
-                            actualizar_stock_shopify(p_id, stk_vivo)
-                            stk_a_enviar = stk_vivo
+                            # 1. Consultar y actualizar stock en vivo si está habilitado
+                            stk_a_enviar = None
+                            if up_stock:
+                                stk_vivo = obtener_stock_puntual_serpi(sku, forzar_en_vivo=True)
+                                actualizar_stock_shopify(p_id, stk_vivo)
+                                stk_a_enviar = stk_vivo
+                            else:
+                                stk_a_enviar = int(float(serpi_info.get("stock") or 0))
                                 
-                            # 2. Consultar precio en vivo (Lista 1) y mapear taxonomía exacta de Troya
-                            p_vivo = obtener_precio_puntual_serpi(sku, forzar_en_vivo=True)
-                            precio_a_enviar = p_vivo if p_vivo > 0 else float(item.get("_erp_price") or serpi_info.get("precio") or 0)
-                            
-                            cp = serpi_info.get("camposPersonalizados") or {}
-                            autor_val = str(serpi_info.get("autor") or cp.get("autor") or "").strip()
-                            editorial_val = str(serpi_info.get("editorial") or cp.get("editorial") or "").strip()
-                            categoria_val = str(serpi_info.get("categoria") or cp.get("categoria") or "").strip()
-                            
-                            fila_update = pd.Series({
-                                "serpi": sku,
-                                "sku": sku,
-                                "barcode": sku,
-                                "descripcion": serpi_info.get("descripcion", tit),
-                                "price": precio_a_enviar,
-                                "idgrupocontable": serpi_info.get("idgrupocontable"),
-                                "grupocontable": serpi_info.get("grupocontable"),
-                                "autor": autor_val,
-                                "vendor": autor_val,
-                                "editorial": editorial_val,
-                                "productType": editorial_val,
-                                "categoria": categoria_val,
-                                "tags": categoria_val,
-                                "presentacion": serpi_info.get("presentacion") or cp.get("presentacion", ""),
-                                "estado": serpi_info.get("estado") or cp.get("estado", ""),
-                                "paginas": serpi_info.get("paginas") or cp.get("paginas", ""),
-                                **cp
-                            })
-                            actualizar_producto_con_esquema(p_id, fila_update)
+                            # 2. Actualizar precio, IVA, ficha técnica en Shopify si están habilitados
+                            if campos_permitidos_lote:
+                                if up_precio:
+                                    p_vivo = obtener_precio_puntual_serpi(sku, forzar_en_vivo=True)
+                                    precio_a_enviar = p_vivo if p_vivo > 0 else float(item.get("_erp_price") or serpi_info.get("precio") or 0)
+                                else:
+                                    precio_a_enviar = float(serpi_info.get("precio") or 0)
+                                
+                                cp = serpi_info.get("camposPersonalizados") or {}
+                                autor_val = str(serpi_info.get("autor") or cp.get("autor") or "").strip()
+                                editorial_val = str(serpi_info.get("editorial") or cp.get("editorial") or "").strip()
+                                categoria_val = str(serpi_info.get("categoria") or cp.get("categoria") or "").strip()
+                                
+                                fila_update = pd.Series({
+                                    "serpi": sku,
+                                    "sku": sku,
+                                    "barcode": sku,
+                                    "descripcion": serpi_info.get("descripcion", tit),
+                                    "price": precio_a_enviar,
+                                    "idgrupocontable": serpi_info.get("idgrupocontable"),
+                                    "grupocontable": serpi_info.get("grupocontable"),
+                                    "autor": autor_val,
+                                    "vendor": autor_val,
+                                    "editorial": editorial_val,
+                                    "productType": editorial_val,
+                                    "categoria": categoria_val,
+                                    "tags": categoria_val,
+                                    "presentacion": serpi_info.get("presentacion") or cp.get("presentacion", ""),
+                                    "estado": serpi_info.get("estado") or cp.get("estado", ""),
+                                    "paginas": serpi_info.get("paginas") or cp.get("paginas", ""),
+                                    **cp
+                                })
+                                actualizar_producto_con_esquema(p_id, fila_update, campos_permitidos=campos_permitidos_lote)
                             
                             # 3. Registrar procesado
                             registrar_producto_procesado(sku)
-                            actualizar_sku_en_snapshot(sku, stock=stk_a_enviar, precio=precio_a_enviar)
+                            actualizar_sku_en_snapshot(sku, stock=stk_a_enviar, precio=serpi_info.get("precio"))
                             exitos += 1
                         except Exception as e:
                             errores += 1
                             
-                        time.sleep(0.05)
+                        time.sleep(0.04)
                         prog_sync.progress((idx + 1) / total_lote)
                         
                     st.balloons()
