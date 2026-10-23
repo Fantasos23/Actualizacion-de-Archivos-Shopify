@@ -423,23 +423,76 @@ def determinar_taxable_desde_fila(row):
 
 
 def consultar_articulos_modificados(horas=24):
+    """Consulta artículos creados o modificados en SERPI en las últimas N horas."""
     ahora = datetime.now()
     inicio = ahora - timedelta(hours=horas)
     params = {
-        "fechamodificaini": inicio.strftime("%Y-%m-%d"),
-        "fechamodificafin": ahora.strftime("%Y-%m-%d"),
+        "fechamodificaini": inicio.strftime("%Y-%m-%d %H:%M:%S"),
+        "fechamodificafin": ahora.strftime("%Y-%m-%d %H:%M:%S"),
         "limite": 500,
         "pagina": 1
     }
-    return consultar_serpi_api("/api/v1/Articulo", params=params)
+    res = consultar_serpi_api("/api/v1/Articulo", params=params)
+    return res if isinstance(res, list) else []
 
-def consultar_inventario_completo(status_callback=None):
+def consultar_precios_modificados(horas=24, id_lista=1):
+    """Consulta los precios modificados en SERPI (Lista 1 por defecto) en las últimas N horas."""
+    ahora = datetime.now()
+    inicio = ahora - timedelta(hours=horas)
+    params = {
+        "idListaPrecio": id_lista,
+        "fechamodificaini": inicio.strftime("%Y-%m-%d %H:%M:%S"),
+        "fechamodificafin": ahora.strftime("%Y-%m-%d %H:%M:%S"),
+        "limite": 500,
+        "pagina": 1
+    }
+    res = consultar_serpi_api("/api/v1/ListaPrecioDetalle", params=params)
+    return res if isinstance(res, list) else []
+
+def consultar_inventario_modificado(horas=24, bodegas=None):
+    """
+    Consulta existencias modificadas en SERPI en las últimas N horas para las bodegas especificadas.
+    Por defecto consulta bodegas BG (16) y CG (17).
+    """
+    if bodegas is None:
+        bodegas = [16, 17]
+    ahora = datetime.now()
+    inicio = ahora - timedelta(hours=horas)
+    hoy = ahora.strftime("%Y-%m-%d")
+    registros = []
+    for b_id in bodegas:
+        params = {
+            "fechaCorte": hoy,
+            "idBodega": b_id,
+            "fechamodificaini": inicio.strftime("%Y-%m-%d %H:%M:%S"),
+            "fechamodificafin": ahora.strftime("%Y-%m-%d %H:%M:%S"),
+            "limite": 500,
+            "pagina": 1
+        }
+        res = consultar_serpi_api("/api/v1/SaldoInventarioSinCosto", params=params)
+        if isinstance(res, list):
+            registros.extend(res)
+    return registros
+
+def consultar_inventario_completo(status_callback=None, bodegas=None):
+    """Consulta inventario completo en SERPI, filtrando opcionalmente directo por bodegas autorizadas."""
+    if bodegas is None:
+        bodegas = [16, 17]
     hoy = datetime.now().strftime("%Y-%m-%d")
-    return consultar_todos_los_registros_serpi("/api/v1/SaldoInventarioSinCosto", {"fechaCorte": hoy}, status_callback=status_callback)
+    todos = []
+    for b_id in bodegas:
+        res = consultar_todos_los_registros_serpi(
+            "/api/v1/SaldoInventarioSinCosto",
+            {"fechaCorte": hoy, "idBodega": b_id},
+            status_callback=status_callback
+        )
+        if isinstance(res, list):
+            todos.extend(res)
+    return todos
 
 def consultar_precios_completos(status_callback=None):
-    """Consulta la lista de precios oficial (LISTA PP / id_listaprecio=1) de SERPI con precios por artículo."""
-    return consultar_todos_los_registros_serpi("/api/v1/ListaPrecioDetalle", params_base={"id_listaprecio": 1}, tamano_pagina=1000, max_paginas=130, status_callback=status_callback)
+    """Consulta la lista de precios oficial (LISTA PP / idListaPrecio=1) de SERPI con precios por artículo."""
+    return consultar_todos_los_registros_serpi("/api/v1/ListaPrecioDetalle", params_base={"idListaPrecio": 1}, tamano_pagina=1000, max_paginas=130, status_callback=status_callback)
 
 def obtener_precio_puntual_serpi(codigo_sku, forzar_en_vivo=True):
     """Consulta el precio de un SKU específico directamente en SERPI (en vivo por defecto) y actualiza el snapshot."""
@@ -450,7 +503,7 @@ def obtener_precio_puntual_serpi(codigo_sku, forzar_en_vivo=True):
             if codigo_str in snapshot and snapshot[codigo_str].get("precio") is not None and float(snapshot[codigo_str]["precio"]) > 0:
                 return float(snapshot[codigo_str]["precio"])
 
-        res = consultar_serpi_api("/api/v1/ListaPrecioDetalle", params={"codigo": codigo_str, "limite": 10})
+        res = consultar_serpi_api("/api/v1/ListaPrecioDetalle", params={"codigo": codigo_str, "idListaPrecio": 1, "limite": 10})
         if res and isinstance(res, list):
             precios_validos = []
             for r in res:
@@ -2074,8 +2127,55 @@ with tab_unificado:
     # --- FLUJO 1: Auditoría Rápida con Cruce Automático contra Shopify ---
     if btn_fast_sync:
         snapshot_previo = cargar_snapshot_control()
-        with st.spinner("Consultando artículos modificados recientemente en SERPI y auditando contra Shopify..."):
+        with st.spinner("Consultando novedades (artículos, precios y existencias en BG/CG) en SERPI y auditando contra Shopify..."):
+            ahora = datetime.now()
+            inicio = ahora - timedelta(hours=rango_unificado)
+            f_ini = inicio.strftime("%Y-%m-%d %H:%M:%S")
+            f_fin = ahora.strftime("%Y-%m-%d %H:%M:%S")
+            f_corte = ahora.strftime("%Y-%m-%d")
+
+            # 1. Consultas paralelas a las 3 APIs aprovechando fechamodificaini
             articulos_raw = consultar_articulos_modificados(horas=rango_unificado)
+            precios_delta = consultar_precios_modificados(horas=rango_unificado, id_lista=1)
+            saldos_delta = consultar_inventario_modificado(horas=rango_unificado, bodegas=[16, 17])
+
+            # Pre-indexar precios delta por id_articulo y codigo
+            precios_delta_map = {}
+            for pr in precios_delta:
+                p_val = float(pr.get("precio", 0) or 0)
+                if p_val > 0:
+                    if pr.get("codigo"):
+                        precios_delta_map[str(pr.get("codigo")).strip()] = p_val
+                    if pr.get("id_articulo"):
+                        precios_delta_map[int(pr.get("id_articulo"))] = p_val
+
+            # Pre-indexar saldos delta sumando bodegas autorizadas (BG=16, CG=17)
+            saldos_delta_map = {}
+            for sr in saldos_delta:
+                c_stk = str(sr.get("codigo", "")).strip()
+                if c_stk and es_bodega_permitida_shopify(sr.get("idBodega"), sr.get("codigoBodega")):
+                    saldos_delta_map[c_stk] = saldos_delta_map.get(c_stk, 0.0) + float(sr.get("saldo", 0) or 0)
+
+            # Consolidar universo de artículos modificados
+            articulos_por_codigo = {}
+            for a in articulos_raw:
+                c = str(a.get("codigo", "")).strip()
+                if c:
+                    articulos_por_codigo[c] = a
+
+            # Si hubo cambios en saldos o precios de artículos que no venían en /Articulo,
+            # recuperamos su ficha desde el snapshot local o consulta puntual
+            todos_los_codigos = set(articulos_por_codigo.keys()) | set(saldos_delta_map.keys())
+            for c_extra in todos_los_codigos:
+                if c_extra not in articulos_por_codigo:
+                    if c_extra in snapshot_previo:
+                        articulos_por_codigo[c_extra] = snapshot_previo[c_extra]
+                    else:
+                        art_rec = consultar_serpi_api("/api/v1/Articulo", params={"codigo": c_extra})
+                        if isinstance(art_rec, list) and len(art_rec) > 0:
+                            articulos_por_codigo[c_extra] = art_rec[0]
+
+            articulos_consolidados = list(articulos_por_codigo.values())
             
             # Obtener catálogo de Shopify (desde cache de sesión o descarga bulk rápida)
             if "shopify_catalogo_cache" in st.session_state and st.session_state["shopify_catalogo_cache"]:
@@ -2087,21 +2187,33 @@ with tab_unificado:
             mapa_novedades = {}
             prog_serpi = st.progress(0)
             status_serpi = st.empty()
-            total_raw = len(articulos_raw)
+            total_raw = len(articulos_consolidados)
 
-            for idx_art, art in enumerate(articulos_raw):
+            for idx_art, art in enumerate(articulos_consolidados):
                 cod = str(art.get("codigo", "")).strip()
                 if not cod:
                     continue
                 
-                status_serpi.text(f"[{idx_art+1}/{total_raw}] Consultando SERPI en vivo: {art.get('descripcion', '')[:30]}...")
+                status_serpi.text(f"[{idx_art+1}/{total_raw}] Procesando delta SERPI: {art.get('descripcion', '')[:30]}...")
                 prog_serpi.progress((idx_art + 1) / total_raw if total_raw > 0 else 1.0)
                 
-                # 1. Obtener Stock e Inventario EN VIVO desde la API de SERPI
-                stock_live = obtener_stock_puntual_serpi(cod, forzar_en_vivo=True)
+                # 1. Stock EN VIVO desde el delta de SERPI o consulta puntual
+                if cod in saldos_delta_map:
+                    stock_live = int(max(0, saldos_delta_map[cod]))
+                    actualizar_sku_en_snapshot(cod, stock=stock_live)
+                else:
+                    stock_live = obtener_stock_puntual_serpi(cod, forzar_en_vivo=True)
                 
-                # 2. Obtener Precio Oficial (Lista PP) EN VIVO desde la API de SERPI
-                precio_live = obtener_precio_puntual_serpi(cod)
+                # 2. Precio Oficial (Lista 1) desde el delta de SERPI o consulta puntual
+                art_id_int = art.get("id")
+                if cod in precios_delta_map:
+                    precio_live = precios_delta_map[cod]
+                    actualizar_sku_en_snapshot(cod, precio=precio_live)
+                elif art_id_int and art_id_int in precios_delta_map:
+                    precio_live = precios_delta_map[art_id_int]
+                    actualizar_sku_en_snapshot(cod, precio=precio_live)
+                else:
+                    precio_live = obtener_precio_puntual_serpi(cod)
                 
                 # 3. Actualizar el archivo de control (control_snapshot.json) inmediatamente
                 actualizar_sku_en_snapshot(cod, stock=stock_live, precio=precio_live, fila_datos=art)
