@@ -295,7 +295,6 @@ def obtener_serpi_config():
 RAW_SHOP_URL, API_TOKEN, API_VERSION, GRAPHQL_URL, HEADERS = obtener_shopify_config()
 SERPI_BASE_URL, SERPI_HEADERS = obtener_serpi_config()
 
-SNAPSHOT_FILE = base_dir / "control_snapshot.json"
 SCHEMA_PATH = base_dir / "shopify_schema.json"
 
 SCHEMA = {"campos_estandar": {}, "metafields": {}}
@@ -510,14 +509,9 @@ def consultar_precios_completos(status_callback=None):
     return consultar_todos_los_registros_serpi("/api/v1/ListaPrecioDetalle", params_base={"idListaPrecio": 1}, tamano_pagina=1000, max_paginas=130, status_callback=status_callback)
 
 def obtener_precio_puntual_serpi(codigo_sku, forzar_en_vivo=True):
-    """Consulta el precio de un SKU específico directamente en SERPI (en vivo por defecto) y actualiza el snapshot."""
+    """Consulta el precio oficial (Lista 1) de un SKU específico directamente en la API de SERPI en tiempo real."""
     try:
         codigo_str = str(codigo_sku).strip()
-        if not forzar_en_vivo:
-            snapshot = cargar_snapshot_control()
-            if codigo_str in snapshot and snapshot[codigo_str].get("precio") is not None and float(snapshot[codigo_str]["precio"]) > 0:
-                return float(snapshot[codigo_str]["precio"])
-
         res = consultar_serpi_api("/api/v1/ListaPrecioDetalle", params={"codigo": codigo_str, "idListaPrecio": 1, "limite": 10})
         if res and isinstance(res, list):
             precios_validos = []
@@ -526,21 +520,16 @@ def obtener_precio_puntual_serpi(codigo_sku, forzar_en_vivo=True):
                 if c == codigo_str or not c:
                     p = float(r.get("precio", 0) or 0)
                     if p > 0:
-                        precios_validos.append((r.get("id_listaprecio"), p))
+                        precios_validos.append((r.get("id_listaprecio") or r.get("idListaPrecio"), p))
             if precios_validos:
                 for id_lp, p in precios_validos:
                     if id_lp == 1:
-                        actualizar_sku_en_snapshot(codigo_str, precio=p)
                         return p
-                max_p = max(p for _, p in precios_validos)
-                actualizar_sku_en_snapshot(codigo_str, precio=max_p)
-                return max_p
+                return max(p for _, p in precios_validos)
             if len(res) > 0:
                 p_alt = [float(r.get("precio", 0) or 0) for r in res if float(r.get("precio", 0) or 0) > 0]
                 if p_alt:
-                    max_p = max(p_alt)
-                    actualizar_sku_en_snapshot(codigo_str, precio=max_p)
-                    return max_p
+                    return max(p_alt)
     except Exception:
         pass
     return 0.0
@@ -571,15 +560,9 @@ def es_bodega_permitida_shopify(id_bodega=None, codigo_bodega=None):
     return False
 
 def obtener_stock_puntual_serpi(codigo_sku, forzar_en_vivo=True):
-    """Consulta las existencias de un SKU específico sumando únicamente las bodegas autorizadas (BG y CG) en SERPI (en vivo por defecto)."""
+    """Consulta las existencias de un SKU específico sumando únicamente las bodegas autorizadas (BG y CG) en la API de SERPI en tiempo real."""
     try:
         codigo_str = str(codigo_sku).strip()
-        if not forzar_en_vivo:
-            snapshot = cargar_snapshot_control()
-            if codigo_str in snapshot and snapshot[codigo_str].get("stock") is not None:
-                stk_val = int(float(snapshot[codigo_str]["stock"]))
-                return stk_val
-
         hoy = datetime.now().strftime("%Y-%m-%d")
         res = consultar_serpi_api("/api/v1/SaldoInventarioSinCosto", params={"fechaCorte": hoy, "codigo": codigo_str, "limite": 20})
         if res and isinstance(res, list):
@@ -591,79 +574,38 @@ def obtener_stock_puntual_serpi(codigo_sku, forzar_en_vivo=True):
                         total_stock += float(r.get("saldo", 0) or 0)
                     found = True
             if found:
-                val = max(0, int(total_stock))
-                actualizar_sku_en_snapshot(codigo_str, stock=val)
-                return val
+                return max(0, int(total_stock))
             if len(res) > 0:
-                val = max(0, int(sum(float(r.get("saldo", 0) or 0) for r in res if es_bodega_permitida_shopify(r.get("idBodega"), r.get("codigoBodega")))))
-                actualizar_sku_en_snapshot(codigo_str, stock=val)
-                return val
+                return max(0, int(sum(float(r.get("saldo", 0) or 0) for r in res if es_bodega_permitida_shopify(r.get("idBodega"), r.get("codigoBodega")))))
     except Exception:
         pass
     return 0
 
 # -------------------------------------------------------------
-# 3. Snapshot / Archivo de Control y Memoria
+# 3. Cache en Memoria de Sesión (Arquitectura 100% Stateless)
 # -------------------------------------------------------------
 def cargar_snapshot_control():
-    if SNAPSHOT_FILE.exists():
-        try:
-            with open(SNAPSHOT_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+    """Retorna el catálogo en memoria de sesión si existe, sin tocar el disco."""
+    return st.session_state.get("serpi_catalogo_cache", {})
 
 def guardar_snapshot_control(data):
-    try:
-        with open(SNAPSHOT_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        st.error(f"Error guardando archivo de control: {e}")
+    """Almacena el catálogo en la memoria de la sesión (RAM efímera)."""
+    if isinstance(data, dict):
+        st.session_state["serpi_catalogo_cache"] = data
 
 def actualizar_sku_en_snapshot(codigo, stock=None, precio=None, fila_datos=None):
-    snapshot = cargar_snapshot_control()
-    codigo_str = str(codigo).strip()
-    if codigo_str not in snapshot:
-        snapshot[codigo_str] = {}
-        
-    if fila_datos:
-        cp = fila_datos.get("camposPersonalizados") or {}
-        if isinstance(fila_datos, dict):
-            if fila_datos.get("descripcion"):
-                snapshot[codigo_str]["descripcion"] = fila_datos.get("descripcion")
-            if fila_datos.get("idgrupocontable") is not None:
-                snapshot[codigo_str]["idgrupocontable"] = fila_datos.get("idgrupocontable")
-            if fila_datos.get("grupocontable"):
-                snapshot[codigo_str]["grupocontable"] = fila_datos.get("grupocontable")
-            if cp.get("autor"):
-                snapshot[codigo_str]["autor"] = cp.get("autor")
-            if cp.get("editorial"):
-                snapshot[codigo_str]["editorial"] = cp.get("editorial")
-            if cp.get("presentacion"):
-                snapshot[codigo_str]["presentacion"] = cp.get("presentacion")
-            if cp.get("estado"):
-                snapshot[codigo_str]["estado"] = cp.get("estado")
-            if cp.get("paginas"):
-                snapshot[codigo_str]["paginas"] = cp.get("paginas")
-            if cp.get("categoria"):
-                snapshot[codigo_str]["categoria"] = cp.get("categoria")
-            snapshot[codigo_str]["camposPersonalizados"] = cp
-
-    if stock is not None:
-        try:
-            snapshot[codigo_str]["stock"] = int(float(stock))
-        except (ValueError, TypeError):
-            pass
-    if precio is not None:
-        try:
-            snapshot[codigo_str]["precio"] = float(precio)
-        except (ValueError, TypeError):
-            pass
-
-    snapshot[codigo_str]["ultima_actualizacion"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    guardar_snapshot_control(snapshot)
-    return snapshot
+    """Actualiza los datos del SKU en la sesión activa si el catálogo está cargado en RAM."""
+    if "serpi_catalogo_cache" in st.session_state and isinstance(st.session_state["serpi_catalogo_cache"], dict):
+        c_str = str(codigo).strip()
+        if c_str in st.session_state["serpi_catalogo_cache"]:
+            item = st.session_state["serpi_catalogo_cache"][c_str]
+            if stock is not None:
+                try: item["stock"] = int(float(stock))
+                except (ValueError, TypeError): pass
+            if precio is not None:
+                try: item["precio"] = float(precio)
+                except (ValueError, TypeError): pass
+    return {}
 
 def inicializar_memoria_procesados():
     if "productos_procesados_ids" not in st.session_state:
@@ -707,13 +649,13 @@ def consultar_articulos_completos_serpi(status_callback=None):
 
 def enriquecer_snapshot_serpi_completo(status_callback=None, incluir_recalculo_stock=False):
     """
-    Descarga el catálogo maestro de SERPI:
+    Descarga el catálogo maestro de SERPI directamente en memoria RAM (100% Stateless):
     1. Fichas técnicas (/api/v1/Articulo) con autor, editorial, presentación, estado, idgrupocontable y descripción (~45 seg).
-    2. Lista de precios oficial (/api/v1/ListaPrecioDetalle con id_listaprecio=1) con precios por artículo (~45 seg).
-    Si incluir_recalculo_stock=True, también pagina SaldoInventarioSinCosto (~15-20 min).
-    Almacena todo consolidado en el archivo de control local 'control_snapshot.json'.
+    2. Lista de precios oficial (/api/v1/ListaPrecioDetalle con idListaPrecio=1) con precios por artículo (~45 seg).
+    Si incluir_recalculo_stock=True, también consulta SaldoInventarioSinCosto para BG y CG.
+    Retorna el diccionario consolidado en memoria y lo cachea en sesión, sin tocar el disco.
     """
-    snapshot = cargar_snapshot_control()
+    catalogo = {}
     
     # 1. Paginación de artículos y fichas técnicas (/api/v1/Articulo)
     if status_callback: status_callback("Paginando catálogo y fichas de SERPI (/api/v1/Articulo)...")
@@ -721,18 +663,18 @@ def enriquecer_snapshot_serpi_completo(status_callback=None, incluir_recalculo_s
         status_callback=lambda msg: status_callback(f"Fichas SERPI: {msg}") if status_callback else None
     )
     
-    # 2. Paginación de precios oficiales (/api/v1/ListaPrecioDetalle - LISTA PP)
-    if status_callback: status_callback("Paginando lista de precios oficiales SERPI (LISTA PP)...")
+    # 2. Paginación de precios oficiales (/api/v1/ListaPrecioDetalle - Lista 1)
+    if status_callback: status_callback("Paginando lista de precios oficiales SERPI (Lista 1)...")
     precios_raw = consultar_precios_completos(
         status_callback=lambda msg: status_callback(f"Precios SERPI: {msg}") if status_callback else None
     )
     
-    # Mapeo de precios por id_articulo interno (priorizando LISTA PP / id_listaprecio=1)
+    # Mapeo de precios por id_articulo interno y por código
     id_to_precio = {}
     for p in precios_raw:
         id_art = p.get("id_articulo")
         prc = float(p.get("precio", 0) or 0)
-        id_lp = p.get("id_listaprecio")
+        id_lp = p.get("id_listaprecio") or p.get("idListaPrecio")
         if id_art and prc > 0:
             if id_lp == 1 or id_art not in id_to_precio:
                 id_to_precio[id_art] = prc
@@ -749,17 +691,17 @@ def enriquecer_snapshot_serpi_completo(status_callback=None, incluir_recalculo_s
             if cod and es_bodega_permitida_shopify(item.get("idBodega"), item.get("codigoBodega")):
                 saldos_map[cod] = saldos_map.get(cod, 0) + int(float(item.get("saldo", 0) or 0))
 
-    # 4. Consolidar catálogo con Ficha Técnica, Precios y Stock en Snapshot
+    # 4. Consolidar catálogo con Ficha Técnica, Precios y Stock en RAM
     for art in articulos_raw:
         cod = str(art.get("codigo", "")).strip()
         if not cod:
             continue
         art_id = art.get("id")
         cp = art.get("camposPersonalizados", {}) or {}
-        stk = saldos_map.get(cod, snapshot.get(cod, {}).get("stock", 0))
-        prc = id_to_precio.get(art_id, snapshot.get(cod, {}).get("precio", 0.0))
+        stk = saldos_map.get(cod, 0)
+        prc = id_to_precio.get(art_id, 0.0)
         
-        snapshot[cod] = {
+        catalogo[cod] = {
             "id": art_id,
             "codigo": cod,
             "descripcion": art.get("descripcion", ""),
@@ -781,13 +723,13 @@ def enriquecer_snapshot_serpi_completo(status_callback=None, incluir_recalculo_s
 
     # Conservar saldos de ítems que vinieron en saldos
     for cod, stk in saldos_map.items():
-        if cod not in snapshot:
-            snapshot[cod] = {"stock": stk, "precio": 0.0}
+        if cod not in catalogo:
+            catalogo[cod] = {"stock": stk, "precio": 0.0, "codigo": cod}
         else:
-            snapshot[cod]["stock"] = stk
+            catalogo[cod]["stock"] = stk
 
-    guardar_snapshot_control(snapshot)
-    return snapshot
+    st.session_state["serpi_catalogo_cache"] = catalogo
+    return catalogo
 
 def descargar_catalogo_completo_shopify_bulk(status_callback=None, forzar_nueva_extraccion=False):
     """
@@ -1320,10 +1262,10 @@ def consultar_datos_individuales_serpi(codigo_sku):
         if not articulo_serpi:
             articulo_serpi = res_art[0]
             
-    # Respaldo en snapshot si la API de Articulo no devolvió nada
-    snapshot_local = cargar_snapshot_control()
-    if not articulo_serpi and cod in snapshot_local:
-        articulo_serpi = dict(snapshot_local[cod])
+    # Respaldo en cache de sesión si la API puntual no devolvió nada
+    cache_sesion = st.session_state.get("serpi_catalogo_cache", {})
+    if not articulo_serpi and cod in cache_sesion:
+        articulo_serpi = dict(cache_sesion[cod])
 
     # 2. Precio Oficial en SERPI (Lista 1)
     precio_oficial = obtener_precio_puntual_serpi(cod, forzar_en_vivo=True)
@@ -2802,25 +2744,21 @@ with tab_personalizada:
         cant_procesados = len(st.session_state["productos_procesados_ids"])
 
         with st.container(border=True):
-            col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns([2, 2.2, 2.2, 1])
+            col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([2.5, 3.5, 1])
             with col_ctrl1:
                 rango_unificado = st.pills("Ventana ERP", [24, 48, 72], format_func=lambda x: f"Últimas {x}h", default=24, key="rango_unificado")
             with col_ctrl2:
                 st.write("")
-                btn_fast_sync = st.button("⚡ Auditoría Rápida", type="primary", use_container_width=True, key="btn_fast_sync")
+                btn_fast_sync = st.button("⚡ Auditoría Rápida (En Vivo desde APIs)", type="primary", use_container_width=True, key="btn_fast_sync")
             with col_ctrl3:
-                st.write("")
-                btn_full_snapshot = st.button("📦 Control Global (40k)", type="secondary", use_container_width=True, key="btn_full_snapshot")
-            with col_ctrl4:
                 st.write("")
                 if cant_procesados > 0:
                     if st.button(f"🧹 ({cant_procesados})", help="Limpiar productos procesados", use_container_width=True):
                         st.session_state["productos_procesados_ids"] = set()
                         st.rerun()
 
-        # --- FLUJO 1: Auditoría Rápida con Cruce Automático contra Shopify ---
+        # --- FLUJO 1: Auditoría Rápida Directa desde APIs (Sin Archivos Locales) ---
         if btn_fast_sync:
-            snapshot_previo = cargar_snapshot_control()
             with st.spinner("Consultando novedades (artículos, precios y existencias en BG/CG) en SERPI y auditando contra Shopify..."):
                 ahora = datetime.now()
                 inicio = ahora - timedelta(hours=rango_unificado)
@@ -2858,16 +2796,13 @@ with tab_personalizada:
                         articulos_por_codigo[c] = a
 
                 # Si hubo cambios en saldos o precios de artículos que no venían en /Articulo,
-                # recuperamos su ficha desde el snapshot local o consulta puntual
-                todos_los_codigos = set(articulos_por_codigo.keys()) | set(saldos_delta_map.keys())
+                # recuperamos su ficha técnica directamente desde la API en vivo
+                todos_los_codigos = set(articulos_por_codigo.keys()) | set(saldos_delta_map.keys()) | set(precios_delta_map.keys())
                 for c_extra in todos_los_codigos:
-                    if c_extra not in articulos_por_codigo:
-                        if c_extra in snapshot_previo:
-                            articulos_por_codigo[c_extra] = snapshot_previo[c_extra]
-                        else:
-                            art_rec = consultar_serpi_api("/api/v1/Articulo", params={"codigo": c_extra})
-                            if isinstance(art_rec, list) and len(art_rec) > 0:
-                                articulos_por_codigo[c_extra] = art_rec[0]
+                    if isinstance(c_extra, str) and c_extra not in articulos_por_codigo:
+                        art_rec = consultar_serpi_api("/api/v1/Articulo", params={"codigo": c_extra})
+                        if isinstance(art_rec, list) and len(art_rec) > 0:
+                            articulos_por_codigo[c_extra] = art_rec[0]
 
                 articulos_consolidados = list(articulos_por_codigo.values())
             
@@ -2894,7 +2829,6 @@ with tab_personalizada:
                     # 1. Stock EN VIVO desde el delta de SERPI o consulta puntual
                     if cod in saldos_delta_map:
                         stock_live = int(max(0, saldos_delta_map[cod]))
-                        actualizar_sku_en_snapshot(cod, stock=stock_live)
                     else:
                         stock_live = obtener_stock_puntual_serpi(cod, forzar_en_vivo=True)
                 
@@ -2902,15 +2836,10 @@ with tab_personalizada:
                     art_id_int = art.get("id")
                     if cod in precios_delta_map:
                         precio_live = precios_delta_map[cod]
-                        actualizar_sku_en_snapshot(cod, precio=precio_live)
                     elif art_id_int and art_id_int in precios_delta_map:
                         precio_live = precios_delta_map[art_id_int]
-                        actualizar_sku_en_snapshot(cod, precio=precio_live)
                     else:
                         precio_live = obtener_precio_puntual_serpi(cod)
-                
-                    # 3. Actualizar el archivo de control (control_snapshot.json) inmediatamente
-                    actualizar_sku_en_snapshot(cod, stock=stock_live, precio=precio_live, fila_datos=art)
                 
                     # 4. Ficha técnica SERPI
                     cp_serpi = art.get("camposPersonalizados", {}) or {}
@@ -3012,16 +2941,6 @@ with tab_personalizada:
                     st.info("✅ Sin modificaciones de catálogo en el rango horario seleccionado.")
 
 
-        # --- FLUJO 2: Reconstrucción Global Opcional ---
-        if btn_full_snapshot:
-            with st.spinner("Paginando catálogo completo, fichas, precios oficiales y saldos de SERPI..."):
-                prog_full = st.empty()
-                nuevo_snapshot = enriquecer_snapshot_serpi_completo(
-                    status_callback=lambda msg: prog_full.text(f"SERPI: {msg}"),
-                    incluir_recalculo_stock=True
-                )
-                prog_full.empty()
-                st.success(f"🎉 Base de control global actualizada exitosamente con **{len(nuevo_snapshot):,}** productos consolidados.")
 
 
         # -------------------------------------------------------------
@@ -3305,27 +3224,25 @@ with tab_personalizada:
             unsafe_allow_html=True
         )
     
-        snapshot_control_actual = cargar_snapshot_control()
-        tiene_fichas_actual = bool(snapshot_control_actual) and any(bool(v.get("autor") or v.get("editorial")) for v in list(snapshot_control_actual.values())[:100])
+        catalogo_en_memoria = st.session_state.get("serpi_catalogo_cache", {})
+        tiene_catalogo_memoria = bool(catalogo_en_memoria)
     
         with st.container(border=True):
             st.markdown("#### ⚡ Parámetros de Auditoría y Reconciliación")
         
-            if not tiene_fichas_actual:
-                st.warning(
-                    "⚠️ **Aviso de Fichas Técnicas:** El archivo de control local (`control_snapshot.json`) contiene existencias de inventario pero aún no tiene almacenadas las **Fichas Técnicas (Autor, Editorial, Presentación, Estado)** ni los **Precios Oficiales de SERPI**.<br>"
-                    "La casilla de actualización de catálogo maestro está marcada automáticamente para descargar y almacenar esta información (~1.5 min) y habilitar la detección de discrepancias técnicas.",
-                    icon="⚠️"
+            if not tiene_catalogo_memoria:
+                st.info(
+                    "💡 **Modo Directo desde APIs (100% Stateless):** Al iniciar la auditoría, se descargará el catálogo maestro y lista de precios de SERPI directamente en la memoria RAM (~1.5 min) para cruzarlo contra Shopify sin depender de archivos en disco."
                 )
             else:
-                st.info("💡 **Modo Rápido Disponible:** El archivo de control local ya tiene fichas técnicas y precios. La auditoría cruzará los **29.125 productos de Shopify** en memoria en **~30 a 45 segundos**.")
+                st.success(f"⚡ **Catálogo SERPI en Memoria Activa ({len(catalogo_en_memoria):,} SKUs):** Listo para cruzar en memoria en ~30 segundos sin necesidad de volver a descargar.")
         
             col_rec_cfg1, col_rec_cfg2 = st.columns([3, 2])
             with col_rec_cfg1:
                 chk_enriquecer_fichas = st.checkbox(
-                    "📝 Descargar/Actualizar Fichas Técnicas y Precios Oficiales desde SERPI (~1.5 min)",
-                    value=(not tiene_fichas_actual),
-                    help="Descarga todas las fichas técnicas maestro (/api/v1/Articulo) y la lista de precios oficial (LISTA PP) de SERPI y las guarda permanentemente en el archivo de control local."
+                    "📝 Descargar/Actualizar Catálogo y Precios Oficiales desde SERPI (~1.5 min)",
+                    value=(not tiene_catalogo_memoria),
+                    help="Consulta las fichas técnicas maestro (/api/v1/Articulo) y la lista de precios oficial (Lista 1) de SERPI directamente a la memoria de la sesión."
                 )
                 with st.expander("⚙️ Opciones avanzadas adicionales", expanded=False):
                     chk_recalcular_saldos = st.checkbox(
@@ -3353,17 +3270,18 @@ with tab_personalizada:
             status_rec = st.empty()
             try:
                 # 1. SERPI
-                snapshot_serpi = cargar_snapshot_control()
-                necesita_fichas = chk_enriquecer_fichas or chk_recalcular_saldos or (not tiene_fichas_actual)
+                catalogo_en_memoria = st.session_state.get("serpi_catalogo_cache", {})
+                necesita_fichas = chk_enriquecer_fichas or chk_recalcular_saldos or (not catalogo_en_memoria)
             
                 if necesita_fichas:
-                    status_rec.text("Fase 1/3: Descargando fichas técnicas y precios oficiales desde SERPI (~1.5 min)...")
+                    status_rec.text("Fase 1/3: Descargando fichas técnicas y precios oficiales desde SERPI en memoria (~1.5 min)...")
                     snapshot_serpi = enriquecer_snapshot_serpi_completo(
                         status_callback=lambda msg: status_rec.text(f"SERPI: {msg}"),
                         incluir_recalculo_stock=chk_recalcular_saldos
                     )
                 else:
-                    status_rec.text(f"Fase 1/3: Archivo de control SERPI listo ({len(snapshot_serpi):,} SKUs con fichas y precios)...")
+                    status_rec.text(f"Fase 1/3: Utilizando catálogo SERPI en memoria ({len(catalogo_en_memoria):,} SKUs con fichas y precios)...")
+                    snapshot_serpi = catalogo_en_memoria
                 prog_bar.progress(35)
             
                 # 2. SHOPIFY BULK
@@ -3533,8 +3451,8 @@ with tab_personalizada:
 
                 st.markdown(
                     f"<div style='background: #1C1917; border-radius: 12px; padding: 12px 16px; margin: 12px 0; font-size: 13px; color: #F59E0B; border: 1px solid #78350F;'>"
-                    f"<b>⚠️ Productos en Shopify no encontrados en el archivo de control local de SERPI ({len(sin_serpi_norm):,}):</b><br>"
-                    f"Estos artículos están creados en tu tienda Shopify pero no coinciden con el snapshot local de SERPI. "
+                    f"<b>⚠️ Productos en Shopify no encontrados en el catálogo de SERPI ({len(sin_serpi_norm):,}):</b><br>"
+                    f"Estos artículos están creados en tu tienda Shopify pero no coinciden con los registros de SERPI. "
                     f"<b>Razones principales:</b><br>"
                     f"1. <b>Tienen saldo 0 en SERPI:</b> Muchos libros existen en el catálogo maestro de SERPI pero al no tener existencias físicas no figuraban en el corte de saldos.<br>"
                     f"2. <b>Error de digitación en Shopify:</b> El SKU o código de barras fue ingresado con algún error tipográfico.<br>"
@@ -3628,11 +3546,13 @@ with tab_personalizada:
                                     f"- **Título / Descripción en SERPI:** **{art_d.get('descripcion')}**\n"
                                     f"- **Grupo Contable:** {resolver_grupo_contable_articulo(art_d)} (ID: {art_d.get('idgrupocontable')})\n"
                                     f"- **Activo en SERPI:** {'Sí' if art_d.get('activo') else 'No'}\n\n"
-                                    f"💡 **¿Por qué no hizo match antes?** Este producto está registrado en el catálogo maestro de artículos de SERPI, pero **no estaba en el archivo de control local** porque tenía saldo de inventario en 0 cuando se generó el snapshot."
+                                    f"💡 **Diagnóstico:** Este producto está registrado en el catálogo de SERPI.\n"
                                 )
-                                if st.button("➕ Incorporar este producto al Archivo de Control Local", key="btn_add_snap_single"):
-                                    actualizar_sku_en_snapshot(art_d.get('codigo'), stock=0, precio=0)
-                                    st.success("¡Producto incorporado al archivo de control! En la próxima auditoría ya hará match.")
+                                if st.button("➕ Incorporar este producto a la memoria de la sesión", key="btn_add_snap_single"):
+                                    if "serpi_catalogo_cache" not in st.session_state:
+                                        st.session_state["serpi_catalogo_cache"] = {}
+                                    st.session_state["serpi_catalogo_cache"][str(art_d.get('codigo')).strip()] = art_d
+                                    st.success("¡Producto incorporado a la memoria de la sesión! En la próxima auditoría ya hará match.")
                                     st.rerun()
                             else:
                                 st.error(f"❌ **El código '{sku_a_probar.strip()}' NO existe en SERPI.**")
