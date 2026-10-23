@@ -24,9 +24,24 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@300;400;500;700&display=swap');
 
-/* Tipografía Base y Suavizado */
-html, body, [class*="css"], .stMarkdown, p, span, label, div {
-    font-family: 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, sans-serif !important;
+/* Tipografía Base y Suavizado (sin sobreescribir fuentes de iconos internos de Streamlit) */
+html, body, .stApp, .stMarkdown, p, h1, h2, h3, h4, h5, h6 {
+    font-family: 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* Preservar intactas las fuentes de iconos de Streamlit (Material Symbols y Font Ligatures) */
+[data-testid*="Icon"], [data-testid="stIconMaterial"], .material-symbols-rounded, .material-symbols-outlined, [data-baseweb="icon"], [class*="material-symbols"], span[class*="Icon"] {
+    font-family: 'Material Symbols Rounded', 'Material Symbols Outlined', 'Material Icons', sans-serif !important;
+}
+
+/* Asegurar renderizado limpio sin texto superpuesto en expanders y file uploader */
+[data-testid="stExpander"] summary, [data-testid="stFileUploader"] {
+    font-family: 'Google Sans', 'Roboto', sans-serif;
+}
+
+[data-testid="stExpander"] summary [data-testid*="Icon"],
+[data-testid="stFileUploader"] [data-testid*="Icon"] {
+    font-family: 'Material Symbols Rounded', 'Material Symbols Outlined', inherit !important;
 }
 
 /* Layout Principal */
