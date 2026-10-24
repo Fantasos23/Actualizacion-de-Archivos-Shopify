@@ -217,6 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Control Snapshot Local
+# Control Snapshot Local y Backups
 control_snapshot.json
+*.csv
+backup_*.json
+base_datos_*.json
 
