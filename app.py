@@ -1760,6 +1760,26 @@ def crear_producto_en_shopify(item_serpi):
 
         data = res.get("data", {}).get("productCreate", {})
         errs = data.get("userErrors", [])
+
+        # --- Manejo inteligente si el Handle ya existe (Opción 2: Fallback) ---
+        if errs and any("handle" in str(e.get("field", [])).lower() or "handle" in str(e.get("message", "")).lower() for e in errs):
+            # Intento 1: Adjuntar el código/ISBN al handle para diferenciar la edición
+            sufijo_codigo = limpiar_para_handle(codigo)
+            nuevo_handle = f"{handle}-{sufijo_codigo}" if sufijo_codigo else f"{handle}-1"
+            input_product["handle"] = nuevo_handle
+            res = ejecutar_graphql(mutation_create, {"input": input_product})
+            if res and "data" in res:
+                data = res.get("data", {}).get("productCreate", {})
+                errs = data.get("userErrors", [])
+
+            # Intento 2 (Fallback final): Si aún colisiona, omitir handle para que Shopify resuelva automáticamente (-1, -2, etc.)
+            if errs and any("handle" in str(e.get("field", [])).lower() or "handle" in str(e.get("message", "")).lower() for e in errs):
+                input_product.pop("handle", None)
+                res = ejecutar_graphql(mutation_create, {"input": input_product})
+                if res and "data" in res:
+                    data = res.get("data", {}).get("productCreate", {})
+                    errs = data.get("userErrors", [])
+
         if errs:
             return None, errs
 
