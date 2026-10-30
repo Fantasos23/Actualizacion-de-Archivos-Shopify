@@ -23,25 +23,61 @@ st.set_page_config(page_title="Sincronizador SERPI ➔ Shopify", layout="wide", 
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@300;400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200');
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200');
 
-/* Tipografía Base y Suavizado (sin sobreescribir fuentes de iconos internos de Streamlit) */
+/* Tipografía Base y Suavizado */
 html, body, .stApp, .stMarkdown, p, h1, h2, h3, h4, h5, h6 {
     font-family: 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
-/* Preservar intactas las fuentes de iconos de Streamlit (Material Symbols y Font Ligatures) */
-[data-testid*="Icon"], [data-testid="stIconMaterial"], .material-symbols-rounded, .material-symbols-outlined, [data-baseweb="icon"], [class*="material-symbols"], span[class*="Icon"] {
-    font-family: 'Material Symbols Rounded', 'Material Symbols Outlined', 'Material Icons', sans-serif !important;
+/* Iconos de Streamlit (Material Symbols) con ligaduras forzadas y aislamiento de ancho */
+.material-symbols-rounded,
+.material-symbols-outlined,
+[data-testid="stIconMaterial"],
+[data-testid*="Icon"] {
+    font-family: 'Material Symbols Rounded', 'Material Symbols Outlined' !important;
+    font-weight: 400 !important;
+    font-style: normal !important;
+    line-height: 1 !important;
+    letter-spacing: normal !important;
+    text-transform: none !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    white-space: nowrap !important;
+    word-wrap: normal !important;
+    direction: ltr !important;
+    -webkit-font-feature-settings: 'liga' 1 !important;
+    font-feature-settings: 'liga' 1 !important;
+    -webkit-font-smoothing: antialiased !important;
+    text-rendering: optimizeLegibility !important;
+    overflow: hidden !important;
+    max-width: 1.5em !important;
 }
 
-/* Asegurar renderizado limpio sin texto superpuesto en expanders y file uploader */
-[data-testid="stExpander"] summary, [data-testid="stFileUploader"] {
+/* Layout y separación limpia para summary (Expanders) y botones de subida (File Uploader) */
+[data-testid="stExpander"] summary {
     font-family: 'Google Sans', 'Roboto', sans-serif;
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
 }
 
+[data-testid="stExpander"] summary [data-testid="stIconMaterial"],
 [data-testid="stExpander"] summary [data-testid*="Icon"],
+[data-testid="stFileUploader"] [data-testid="stIconMaterial"],
 [data-testid="stFileUploader"] [data-testid*="Icon"] {
-    font-family: 'Material Symbols Rounded', 'Material Symbols Outlined', inherit !important;
+    font-family: 'Material Symbols Rounded', 'Material Symbols Outlined' !important;
+    font-weight: 400 !important;
+    overflow: hidden !important;
+    max-width: 1.5em !important;
+}
+
+[data-testid="stFileUploader"] button {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 8px !important;
 }
 
 /* Layout Principal */
@@ -1650,11 +1686,11 @@ def actualizar_stock_shopify(product_id, nueva_cantidad):
     except Exception as e:
         return [{"field": ["inventory_exception"], "message": str(e)}]
 
-def crear_producto_en_shopify(item_serpi):
+def crear_producto_en_shopify(item_serpi, estado_inicial="DRAFT"):
     """
     PASO 1: Crea el producto (Título, Handle, Descripción, Tags y Metafields) con GraphQL.
     PASO 2: Asigna SKU, Precio y Seguimiento con REST (/variants/{id}.json).
-    PASO 3: Publica en todos los canales de venta.
+    PASO 3: Vincula y publica en todos los canales de venta (conservando estado DRAFT si se solicita).
     PASO 4: Asigna las existencias en la sucursal activa.
     """
     try:
@@ -1722,6 +1758,7 @@ def crear_producto_en_shopify(item_serpi):
                 })
 
         # --- PASO 1: Creación del Producto Base ---
+        status_limpio = "DRAFT" if str(estado_inicial).upper() in ["DRAFT", "BORRADOR"] else "ACTIVE"
         input_product = {
             "title": titulo,
             "handle": handle,
@@ -1729,7 +1766,7 @@ def crear_producto_en_shopify(item_serpi):
             "productType": editorial_val,
             "descriptionHtml": desc_html,
             "tags": tags_list,
-            "status": "ACTIVE",
+            "status": status_limpio,
             "metafields": metafields_input
         }
 
@@ -1813,9 +1850,10 @@ def crear_producto_en_shopify(item_serpi):
                 timeout=15
             )
 
-        # --- PASO 3: Publicar en todos los Canales de Venta ---
+        # --- PASO 3: Publicar y Vincular en Canales de Venta ---
         if new_product_id:
-            publicar_producto_en_canales(new_product_id)
+            es_borrador = (status_limpio == "DRAFT")
+            publicar_producto_en_canales(new_product_id, mantener_borrador=es_borrador)
 
         # --- PASO 4: Asentar el inventario físico en la sucursal ---
         if new_product_id:
@@ -2024,11 +2062,12 @@ def verificar_permisos_canales_shopify():
     except Exception:
         return False, []
 
-def publicar_producto_en_canales(product_id):
+def publicar_producto_en_canales(product_id, mantener_borrador=False):
     """
-    Publica el producto en todos los canales de venta activos:
-    1. Asegura que el producto esté publicado y activo vía REST (Tienda Online / Global).
-    2. Publica en todos los canales externos (POS, Facebook & Instagram, Google & YouTube, TikTok, Shop) vía GraphQL.
+    Publica o vincula el producto en todos los canales de venta activos:
+    1. Si mantener_borrador=True, preserva el status 'draft' (Borrador) para revisión manual previa.
+       Si mantener_borrador=False, activa el producto ('active') y lo publica inmediatamente.
+    2. Enlaza el producto en todos los canales externos (POS, Facebook & Instagram, Google & YouTube, TikTok, Pinterest, etc.) vía GraphQL.
     """
     errores = []
     try:
@@ -2037,19 +2076,24 @@ def publicar_producto_en_canales(product_id):
         raw_url, token, version, gql_url, hdrs = obtener_shopify_config()
         rest_url = f"https://{raw_url}/admin/api/{version}"
 
-        # 1. Asegurar estado activo y publicación global vía REST (Online Store)
+        # 1. Ajustar estado y publicación vía REST
         try:
+            payload_prod = {
+                "product": {
+                    "id": int(prod_numeric_id)
+                }
+            }
+            if mantener_borrador:
+                payload_prod["product"]["status"] = "draft"
+            else:
+                payload_prod["product"]["status"] = "active"
+                payload_prod["product"]["published"] = True
+                payload_prod["product"]["published_scope"] = "global"
+
             requests.put(
                 f"{rest_url}/products/{prod_numeric_id}.json",
                 headers=hdrs,
-                json={
-                    "product": {
-                        "id": int(prod_numeric_id),
-                        "published": True,
-                        "published_scope": "global",
-                        "status": "active"
-                    }
-                },
+                json=payload_prod,
                 timeout=15
             )
         except Exception:
@@ -2175,20 +2219,30 @@ def mostrar_modal_previsualizacion_unificado(item_consolidado):
                         st.write(f"**Editorial:** {editorial}")
                         st.write(f"**Grupo Contable:** {grupo_nombre} ({'✅ Cobra IVA' if es_tax else '❌ Exento de IVA'})")
                 
+                sel_est_modal = st.radio(
+                    "Estado inicial en Shopify:",
+                    ["📝 Borrador (Draft - Para revisión previa manual)", "🚀 Activo (Active - Visible de inmediato)"],
+                    index=0,
+                    horizontal=True,
+                    key=f"sel_est_modal_{codigo_serpi}"
+                )
+                est_modal_val = "DRAFT" if "Borrador" in sel_est_modal else "ACTIVE"
+
                 st.write("")
                 if st.button("✨ Dar de Alta y Crear Producto en Shopify", type="primary", use_container_width=True, key="btn_create_modal"):
                     with st.spinner("Creando producto y configurando inventario..."):
-                        new_id, errs = crear_producto_en_shopify(item_consolidado)
+                        new_id, errs = crear_producto_en_shopify(item_consolidado, estado_inicial=est_modal_val)
                         if new_id:
                             registrar_producto_procesado(codigo_serpi)
                             actualizar_sku_en_snapshot(codigo_serpi, stock=item_consolidado.get("saldo", nuevo_stock), precio=item_consolidado.get("precio", nuevo_precio))
                             st.session_state[f"creado_{codigo_serpi}"] = new_id
                             st.balloons()
                             stock_final = int(float(item_consolidado.get("saldo", nuevo_stock) or 0))
+                            tipo_msg = "como **BORRADOR (Draft)** para revisión manual" if est_modal_val == "DRAFT" else "y **ACTIVO** en todos los canales"
                             if errs:
-                                st.warning(f"⚠️ ¡Producto creado (ID: `{new_id}`), pero hubo un aviso en inventario: {errs}")
+                                st.warning(f"⚠️ ¡Producto creado {tipo_msg} (ID: `{new_id}`), pero hubo un aviso en inventario: {errs}")
                             else:
-                                st.success(f"🎉 ¡Producto creado y publicado exitosamente con {stock_final} unidades de inventario! (ID: `{new_id}`)")
+                                st.success(f"🎉 ¡Producto creado exitosamente {tipo_msg} con {stock_final} unidades de inventario! (ID: `{new_id}`)")
                         else:
                             st.error(f"Error al crear: {errs}")
 
@@ -2676,6 +2730,15 @@ with tab_individual:
                 st.markdown("#### ✨ Creación del Producto en Shopify")
                 st.info("Al presionar este botón, se creará el producto en Shopify con todos sus datos de SERPI (Título, Handle, Ficha Técnica, Metacampos, Precio, IVA, y Stock en la sucursal activa).")
                 
+                sel_est_indiv = st.radio(
+                    "Estado inicial del producto en Shopify:",
+                    ["📝 Borrador (Draft - Para revisión previa manual)", "🚀 Activo (Active - Visible en todos los canales de inmediato)"],
+                    index=0,
+                    horizontal=True,
+                    key=f"sel_est_indiv_{cod_actual}"
+                )
+                est_indiv_val = "DRAFT" if "Borrador" in sel_est_indiv else "ACTIVE"
+                
                 btn_crear_prod = st.button("✨ Crear Producto en Shopify Ahora", type="primary", use_container_width=True, key="btn_crear_indiv")
                 
                 if btn_crear_prod:
@@ -2686,7 +2749,7 @@ with tab_individual:
                         item_para_crear["precio"] = datos_serpi["precio"]
                         item_para_crear["saldo"] = datos_serpi["stock"]
                         
-                        new_id, err_crear = crear_producto_en_shopify(item_para_crear)
+                        new_id, err_crear = crear_producto_en_shopify(item_para_crear, estado_inicial=est_indiv_val)
                         if new_id:
                             st.session_state["individual_creado_id"] = new_id
                             actualizar_sku_en_snapshot(cod_actual, stock=datos_serpi["stock"], precio=datos_serpi["precio"], fila_datos=item_para_crear)
@@ -2694,7 +2757,8 @@ with tab_individual:
                             raw_shop_clean = RAW_SHOP_URL.split(".")[0]
                             num_id = new_id.split("/")[-1]
                             admin_url = f"https://admin.shopify.com/store/{raw_shop_clean}/products/{num_id}"
-                            st.success(f"🎉 **¡Producto creado exitosamente en Shopify!**\n\nID: `{new_id}` — [Abrir en Shopify Admin]({admin_url}) ↗")
+                            tipo_msg = "BORRADOR (Draft) para tu revisión manual" if est_indiv_val == "DRAFT" else "ACTIVO en todos los canales de venta"
+                            st.success(f"🎉 **¡Producto creado exitosamente como {tipo_msg}!**\n\nID: `{new_id}` — [Abrir en Shopify Admin]({admin_url}) ↗")
                             
                             d_sp_created, _ = consultar_datos_individuales_shopify(cod_actual)
                             if d_sp_created.get("encontrado"):
